@@ -730,6 +730,24 @@ class TRUEFramework {
             });
         }
         
+        // Firebase setup
+        const setupFirebaseBtn = document.getElementById('setup-firebase');
+        if (setupFirebaseBtn) {
+            setupFirebaseBtn.addEventListener('click', () => {
+                this.setupFirebase();
+            });
+        }
+        
+        const toggleSyncBtn = document.getElementById('toggle-sync');
+        if (toggleSyncBtn) {
+            toggleSyncBtn.addEventListener('click', () => {
+                this.toggleFirebaseSync();
+            });
+        }
+        
+        // Check for existing Firebase config
+        this.checkFirebaseConfig();
+        
         // URL suggestions functionality
         this.setupUrlSuggestions();
     }
@@ -3134,6 +3152,212 @@ class TRUEFramework {
         } catch (error) {
             console.warn(`URL validation failed for ${url}:`, error.message);
             return false;
+        }
+    }
+    
+    // Firebase Integration Methods
+    async checkFirebaseConfig() {
+        const savedConfig = localStorage.getItem('firebase_config');
+        if (savedConfig) {
+            try {
+                const config = JSON.parse(savedConfig);
+                if (window.firebaseStorage && window.firebaseStorage.constructor.validateConfig(config)) {
+                    await this.initializeFirebase(config);
+                }
+            } catch (error) {
+                console.error('Error loading Firebase config:', error);
+            }
+        }
+    }
+    
+    async initializeFirebase(config) {
+        if (!window.firebaseStorage) {
+            console.error('Firebase storage module not loaded');
+            return;
+        }
+        
+        const success = await window.firebaseStorage.initialize(config);
+        if (success) {
+            this.updateFirebaseStatus('connected');
+            document.getElementById('setup-firebase').style.display = 'none';
+            document.getElementById('toggle-sync').style.display = 'inline-block';
+            
+            // Check if sync was previously enabled
+            const syncEnabled = localStorage.getItem('firebase_sync_enabled') === 'true';
+            if (syncEnabled) {
+                this.enableFirebaseSync();
+            }
+        }
+    }
+    
+    async setupFirebase() {
+        // Create modal for Firebase configuration
+        const modal = document.createElement('div');
+        modal.style.cssText = `
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: white;
+            padding: 2rem;
+            border-radius: 12px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+            z-index: 10000;
+            max-width: 500px;
+            width: 90%;
+        `;
+        
+        modal.innerHTML = `
+            <h3 style="margin-top: 0;">Firebase Configuration</h3>
+            <p style="color: #666; margin-bottom: 1.5rem;">
+                Enter your Firebase project configuration. You can get this from your Firebase Console.
+            </p>
+            <form id="firebase-config-form">
+                <div style="margin-bottom: 1rem;">
+                    <label style="display: block; margin-bottom: 0.25rem; font-weight: 600;">API Key:</label>
+                    <input type="text" name="apiKey" required style="width: 100%; padding: 0.5rem; border: 1px solid #ddd; border-radius: 4px;">
+                </div>
+                <div style="margin-bottom: 1rem;">
+                    <label style="display: block; margin-bottom: 0.25rem; font-weight: 600;">Auth Domain:</label>
+                    <input type="text" name="authDomain" required placeholder="your-project.firebaseapp.com" style="width: 100%; padding: 0.5rem; border: 1px solid #ddd; border-radius: 4px;">
+                </div>
+                <div style="margin-bottom: 1rem;">
+                    <label style="display: block; margin-bottom: 0.25rem; font-weight: 600;">Database URL:</label>
+                    <input type="text" name="databaseURL" required placeholder="https://your-project.firebaseio.com" style="width: 100%; padding: 0.5rem; border: 1px solid #ddd; border-radius: 4px;">
+                </div>
+                <div style="margin-bottom: 1rem;">
+                    <label style="display: block; margin-bottom: 0.25rem; font-weight: 600;">Project ID:</label>
+                    <input type="text" name="projectId" required style="width: 100%; padding: 0.5rem; border: 1px solid #ddd; border-radius: 4px;">
+                </div>
+                <div style="margin-bottom: 1.5rem;">
+                    <label style="display: block; margin-bottom: 0.25rem; font-weight: 600;">App ID (optional):</label>
+                    <input type="text" name="appId" style="width: 100%; padding: 0.5rem; border: 1px solid #ddd; border-radius: 4px;">
+                </div>
+                <div style="display: flex; gap: 1rem;">
+                    <button type="submit" style="flex: 1; padding: 0.75rem; background: #10b981; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: 600;">Connect</button>
+                    <button type="button" onclick="this.closest('div').parentElement.parentElement.remove()" style="flex: 1; padding: 0.75rem; background: #ef4444; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: 600;">Cancel</button>
+                </div>
+            </form>
+            <p style="margin-top: 1rem; font-size: 0.875rem; color: #666;">
+                Need help? <a href="https://firebase.google.com/docs/web/setup" target="_blank" style="color: #3b82f6;">View Firebase Setup Guide</a>
+            </p>
+        `;
+        
+        document.body.appendChild(modal);
+        
+        // Handle form submission
+        const form = document.getElementById('firebase-config-form');
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            const config = {
+                apiKey: form.apiKey.value,
+                authDomain: form.authDomain.value,
+                databaseURL: form.databaseURL.value,
+                projectId: form.projectId.value,
+                appId: form.appId.value || undefined
+            };
+            
+            // Save config to localStorage
+            localStorage.setItem('firebase_config', JSON.stringify(config));
+            
+            // Initialize Firebase
+            await this.initializeFirebase(config);
+            
+            // Remove modal
+            modal.remove();
+            
+            this.showNotification('Firebase configured successfully!', 'success');
+        });
+    }
+    
+    async enableFirebaseSync() {
+        if (!window.firebaseStorage || !window.firebaseStorage.initialized) {
+            this.showNotification('Please configure Firebase first', 'warning');
+            return;
+        }
+        
+        // Enable sync
+        window.firebaseStorage.enableSync((evaluations) => {
+            // Handle incoming changes from Firebase
+            this.evaluations = evaluations;
+            this.renderLeaderboard();
+            console.log('Evaluations synced from Firebase');
+        });
+        
+        // Initial sync - upload local data to Firebase
+        await window.firebaseStorage.saveEvaluations(this.evaluations);
+        
+        localStorage.setItem('firebase_sync_enabled', 'true');
+        this.updateFirebaseStatus('syncing');
+        
+        document.getElementById('toggle-sync').textContent = 'Disable Sync';
+        document.getElementById('toggle-sync').onclick = () => this.disableFirebaseSync();
+        
+        this.showNotification('Firebase sync enabled - data will sync across devices', 'success');
+    }
+    
+    async disableFirebaseSync() {
+        if (window.firebaseStorage) {
+            window.firebaseStorage.disableSync();
+        }
+        
+        localStorage.setItem('firebase_sync_enabled', 'false');
+        this.updateFirebaseStatus('connected');
+        
+        document.getElementById('toggle-sync').textContent = 'Enable Sync';
+        document.getElementById('toggle-sync').onclick = () => this.enableFirebaseSync();
+        
+        this.showNotification('Firebase sync disabled', 'info');
+    }
+    
+    toggleFirebaseSync() {
+        const syncEnabled = localStorage.getItem('firebase_sync_enabled') === 'true';
+        if (syncEnabled) {
+            this.disableFirebaseSync();
+        } else {
+            this.enableFirebaseSync();
+        }
+    }
+    
+    updateFirebaseStatus(status) {
+        const statusEl = document.getElementById('firebase-status');
+        const optionEl = document.getElementById('firebase-option');
+        
+        if (statusEl) {
+            switch(status) {
+                case 'connected':
+                    statusEl.textContent = 'Connected (not syncing)';
+                    statusEl.style.color = '#f59e0b';
+                    break;
+                case 'syncing':
+                    statusEl.textContent = 'Syncing enabled';
+                    statusEl.style.color = '#10b981';
+                    if (optionEl) {
+                        optionEl.classList.add('active');
+                        document.getElementById('local-storage-option').classList.remove('active');
+                    }
+                    break;
+                case 'error':
+                    statusEl.textContent = 'Connection error';
+                    statusEl.style.color = '#ef4444';
+                    break;
+                default:
+                    statusEl.textContent = 'Not configured';
+                    statusEl.style.color = '#6b7280';
+            }
+        }
+    }
+    
+    // Override saveEvaluations to also save to Firebase if enabled
+    saveEvaluations() {
+        localStorage.setItem('true_evaluations', JSON.stringify(this.evaluations));
+        
+        // Also save to Firebase if sync is enabled
+        if (window.firebaseStorage && window.firebaseStorage.syncEnabled) {
+            window.firebaseStorage.saveEvaluations(this.evaluations).catch(error => {
+                console.error('Firebase sync error:', error);
+            });
         }
     }
     

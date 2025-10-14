@@ -391,14 +391,15 @@
             <section id="persistence-info">
                 <h3>Data Persistence Options</h3>
                 <div class="persistence-options">
-                    <div class="option active">
+                    <div class="option active" id="local-storage-option">
                         <h4>Local Storage (Active)</h4>
                         <p>Data saved in browser</p>
                     </div>
-                    <div class="option">
-                        <h4>Google Forms Integration</h4>
-                        <p>Submit to Google Form for persistence</p>
-                        <button id="setup-gforms">Setup</button>
+                    <div class="option" id="firebase-option">
+                        <h4>Firebase Cloud Sync</h4>
+                        <p id="firebase-status">Not configured</p>
+                        <button id="setup-firebase">Setup Firebase</button>
+                        <button id="toggle-sync" style="display: none;">Enable Sync</button>
                     </div>
                     <div class="option">
                         <h4>Export/Import</h4>
@@ -447,6 +448,7 @@
     <div id="hover-tooltip" class="hover-tooltip"></div>
 
     <script src="model-evaluations.js"></script>
+    <script src="firebase-config.js"></script>
     <script src="app.js"></script>
     <script>
         // Fallback to show app if loader gets stuck
