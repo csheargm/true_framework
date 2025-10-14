@@ -1791,10 +1791,8 @@ class TRUEFramework {
             
             return `
                 <tr data-eval-id="${evaluation.id}" class="leaderboard-row ${evaluation.modified ? 'edited-row' : ''}" 
-                    onmouseenter="app.handleRowHover(event, '${evaluation.id}')"
-                    onmouseleave="app.handleRowLeave(event)"
                     onclick="app.viewEvaluation('${evaluation.id}')"
-                    title="${evaluation.modified ? 'Manually edited - ' : ''}Click to view details. Hover for 5 seconds to see preview.">
+                    title="${evaluation.modified ? 'Manually edited - ' : ''}Click to view details.">
                     <td class="rank-cell">${rank}</td>
                     <td class="model-name-cell" title="${evaluation.modelName}">${displayName}</td>
                     <td class="eval-count-cell" title="${evalCount} evaluation${evalCount > 1 ? 's' : ''} for this model">
@@ -2921,37 +2919,15 @@ class TRUEFramework {
         }
     }
     
+    // Hover functionality disabled - auto pop-up removed
     handleRowHover(event, evalId) {
-        // Clear any existing timeout
-        if (this.hoverTimeout) {
-            clearTimeout(this.hoverTimeout);
-        }
-        
-        // Store the current mouse position to check if user is still hovering
-        this.hoverEvalId = evalId;
-        
-        // Add 5 second delay to prevent modal from appearing too quickly
-        this.hoverTimeout = setTimeout(() => {
-            // Check if we're still hovering over the same row
-            if (this.hoverEvalId === evalId) {
-                // Show the same detailed view modal as clicking
-                this.viewEvaluation(evalId, false);
-            }
-        }, 5000); // 5 second delay
+        // Functionality disabled - no auto pop-up on hover
+        return;
     }
     
     handleRowLeave(event) {
-        // Clear timeout if mouse leaves before modal appears
-        if (this.hoverTimeout) {
-            clearTimeout(this.hoverTimeout);
-            this.hoverTimeout = null;
-        }
-        
-        // Clear the hover tracking
-        this.hoverEvalId = null;
-        
-        // Note: We don't auto-close the modal here since user might want to interact with it
-        // They can close it manually with the close button or by clicking outside
+        // Functionality disabled - no auto pop-up on hover
+        return;
     }
     
     showHoverTooltip(evaluation, event) {
