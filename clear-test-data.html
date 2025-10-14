@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Clear Test Data</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        button { padding: 10px 20px; margin: 10px; cursor: pointer; background: #ef4444; color: white; border: none; border-radius: 5px; }
+        button:hover { background: #dc2626; }
+        .status { padding: 10px; margin: 10px 0; border-radius: 5px; }
+        .success { background: #d4edda; color: #155724; }
+        .error { background: #f8d7da; color: #721c24; }
+    </style>
+</head>
+<body>
+    <h1>🧹 Clear Test Data</h1>
+    
+    <p>This will remove all test evaluations from localStorage and Firebase.</p>
+    
+    <button onclick="clearTestData()">Clear All Test Data</button>
+    <button onclick="window.location.href='index.html'">Back to App</button>
+    
+    <div id="status"></div>
+
+    <script src="clear-test-data.js"></script>
+    <script>
+        // Override the function to show status in the page
+        const originalClearTestData = window.clearTestData;
+        window.clearTestData = async function() {
+            const statusDiv = document.getElementById('status');
+            statusDiv.innerHTML = '<div class="status">Clearing test data...</div>';
+            
+            try {
+                await originalClearTestData();
+                statusDiv.innerHTML = '<div class="status success">✅ Test data cleared successfully!</div>';
+            } catch (error) {
+                statusDiv.innerHTML = `<div class="status error">❌ Error: ${error.message}</div>`;
+            }
+        };
+    </script>
+</body>
+</html>

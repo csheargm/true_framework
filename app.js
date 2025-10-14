@@ -61,9 +61,14 @@ class TRUEFramework {
         this.setupFocusListener();
         this.updatePopularModelsCount();
         this.cleanupDuplicatesOnLoad(); // Clean up any existing duplicates
+        
+        // Load historic data from Firebase first, then populate models
+        await this.loadHistoricDataFromFirebase();
         await this.checkAndPopulateInitialEvaluations(); // Wait for this to complete
+        
         this.renderLeaderboard();
         this.checkPersistenceStatus();
+        
         // Setup evidence links after DOM is ready
         setTimeout(() => {
             this.setupEvidenceLinks();
@@ -322,6 +327,13 @@ class TRUEFramework {
     }
 
     async checkAndPopulateInitialEvaluations() {
+        // Check if Firebase sync is enabled - if so, don't auto-populate with demo data
+        const firebaseSyncEnabled = localStorage.getItem('firebase_sync_enabled') === 'true';
+        if (firebaseSyncEnabled && window.firebaseStorage && window.firebaseStorage.initialized) {
+            console.log('🔥 Firebase sync enabled - skipping auto-population of demo evaluations');
+            return;
+        }
+        
         // Get dynamic evaluations based on current suggestions
         const dynamicModelEvaluations = await this.getDynamicModelEvaluations();
         
@@ -747,6 +759,12 @@ class TRUEFramework {
         
         // Check for existing Firebase config
         this.checkFirebaseConfig();
+        
+        // Also check after a delay to ensure everything is loaded
+        setTimeout(() => {
+            this.checkFirebaseConfig();
+            this.forceUpdateFirebaseUI();
+        }, 2000);
         
         // URL suggestions functionality
         this.setupUrlSuggestions();
@@ -1706,9 +1724,12 @@ class TRUEFramework {
         // Reset form
         document.querySelectorAll('input[type="checkbox"]').forEach(cb => cb.checked = false);
         document.querySelectorAll('.evidence').forEach(input => input.value = '');
-        document.getElementById('notes').value = '';
-        document.getElementById('model-select').value = '';
-        document.getElementById('model-url').value = '';
+        const notesElement = document.getElementById('notes');
+        if (notesElement) notesElement.value = '';
+        const modelSelectElement = document.getElementById('model-select');
+        if (modelSelectElement) modelSelectElement.value = '';
+        const modelUrlElement = document.getElementById('model-url');
+        if (modelUrlElement) modelUrlElement.value = '';
         
         this.updateScores();
     }
@@ -1748,7 +1769,7 @@ class TRUEFramework {
         // Calculate score-based ranks (rank always reflects score position)
         // Handle ties: models with same score get the same rank
         const scoreRanks = new Map();
-        const sortedByScore = [...filtered].sort((a, b) => {
+        const sortedByScore = [...filtered].filter(e => e && e.modelName).sort((a, b) => {
             // Calculate actual scores for comparison
             const aDimScores = this.calculateDimensionScores(a.scores);
             const bDimScores = this.calculateDimensionScores(b.scores);
@@ -1851,6 +1872,16 @@ class TRUEFramework {
     }
 
     calculateDimensionScores(scores) {
+        // Handle null/undefined scores
+        if (!scores || typeof scores !== 'object') {
+            return {
+                transparent: 0,
+                reproducible: 0,
+                understandable: 0,
+                executable: 0
+            };
+        }
+        
         const points = {
             transparent: { license: 2, weights: 2, inference: 2, training: 2, datasets: 2 },
             reproducible: { hardware: 2, pipeline: 2, checkpoints: 2, cost: 2, community: 2 },
@@ -2185,7 +2216,8 @@ class TRUEFramework {
             if (input) input.value = evidence;
         }
         
-        document.getElementById('notes').value = evaluation.notes || '';
+        const notesElement = document.getElementById('notes');
+        if (notesElement) notesElement.value = evaluation.notes || '';
         
         // Ensure all fields are editable
         this.enableScoringFields();
@@ -2277,6 +2309,9 @@ class TRUEFramework {
         if (gformsConfig) {
             document.querySelector('.persistence-options .option:nth-child(2)').classList.add('active');
         }
+        
+        // Check Firebase status and update UI
+        this.forceUpdateFirebaseUI();
     }
 
     isGoogleFormsEnabled() {
@@ -3155,38 +3190,387 @@ class TRUEFramework {
         }
     }
     
+    // Load historic data from Firebase on page load with localStorage fallback
+    async loadHistoricDataFromFirebase() {
+        console.log('🔥 Loading historic data from Firebase...');
+        
+        // Check if Firebase is configured and available
+        const firebaseAvailable = await this.checkFirebaseAvailability();
+        
+        if (!firebaseAvailable) {
+            console.log('🔥 Firebase not available, falling back to localStorage only');
+            this.updateFirebaseStatus('unavailable');
+            
+            // Show detailed notification about Firebase unavailability
+            const statusEl = document.getElementById('firebase-status');
+            if (statusEl) {
+                statusEl.innerHTML = '⚠️ Firebase unreachable<br><small>Using localStorage only</small>';
+                statusEl.style.color = '#f59e0b';
+                statusEl.style.fontSize = '0.9rem';
+            }
+            
+            this.showNotification('🔥 Firebase unreachable - Working offline with localStorage only', 'warning', 5000);
+            
+            // Also update the Firebase option to show it's offline
+            const firebaseOption = document.getElementById('firebase-option');
+            if (firebaseOption) {
+                firebaseOption.classList.add('offline');
+                firebaseOption.title = 'Firebase is currently unreachable - using localStorage';
+                
+                // Add retry button
+                if (!firebaseOption.querySelector('.retry-btn')) {
+                    const retryBtn = document.createElement('button');
+                    retryBtn.className = 'retry-btn';
+                    retryBtn.textContent = '🔄 Retry';
+                    retryBtn.style.cssText = `
+                        margin-top: 0.5rem;
+                        padding: 0.25rem 0.5rem;
+                        font-size: 0.8rem;
+                        background: #f59e0b;
+                        color: white;
+                        border: none;
+                        border-radius: 4px;
+                        cursor: pointer;
+                    `;
+                    retryBtn.onclick = () => this.retryFirebaseConnection();
+                    firebaseOption.appendChild(retryBtn);
+                }
+            }
+            
+            return;
+        }
+        
+        try {
+            // Load historic evaluations from Firebase with timeout
+            const historicEvaluations = await this.loadFromFirebaseWithTimeout();
+            
+            if (historicEvaluations && historicEvaluations.length > 0) {
+                console.log(`📥 Loaded ${historicEvaluations.length} historic evaluations from Firebase`);
+                
+                // Merge historic data with local data
+                const localEvaluations = this.evaluations || [];
+                const mergedEvaluations = this.mergeHistoricAndLocalData(historicEvaluations, localEvaluations);
+                
+                // Update the app's evaluations
+                this.evaluations = mergedEvaluations;
+                
+                // Save merged data to localStorage for offline access
+                this.saveEvaluations();
+                
+                // Show notification about historic data
+                const newCount = historicEvaluations.length - localEvaluations.length;
+                if (newCount > 0) {
+                    this.showNotification(`📥 Loaded ${newCount} historic evaluations from Firebase`, 'info', 4000);
+                } else {
+                    this.showNotification(`📥 Synced ${historicEvaluations.length} evaluations from Firebase`, 'info', 3000);
+                }
+                
+                // Get storage statistics
+                const stats = await window.firebaseStorage.getStorageStats();
+                if (stats) {
+                    console.log('📊 Firebase Storage Stats:', stats);
+                }
+                
+                // Automatically enable Firebase sync on first load if not already enabled
+                const syncEnabled = localStorage.getItem('firebase_sync_enabled') === 'true';
+                if (!syncEnabled) {
+                    console.log('🔥 Auto-enabling Firebase sync on first load...');
+                    await this.enableFirebaseSync();
+                    this.showNotification('🔥 Firebase Cloud Sync automatically enabled', 'success', 3000);
+                } else {
+                    console.log('🔥 Firebase sync already enabled');
+                }
+                
+            } else {
+                console.log('🔥 No historic data found in Firebase');
+                
+                // If Firebase is empty but localStorage has data, ask user if they want to clear it
+                const localCount = this.evaluations ? this.evaluations.length : 0;
+                if (localCount > 0) {
+                    console.log(`🗑️ Firebase is empty but localStorage has ${localCount} entries`);
+                    
+                    // Clear localStorage to match Firebase state
+                    this.evaluations = [];
+                    this.saveEvaluations();
+                    console.log('🗑️ Cleared localStorage to match empty Firebase');
+                    this.showNotification('🗑️ Firebase cleared - localStorage reset to match', 'info', 3000);
+                }
+            }
+            
+        } catch (error) {
+            console.error('❌ Error loading historic data from Firebase:', error);
+            console.log('🔄 Falling back to localStorage only');
+            this.updateFirebaseStatus('error');
+            
+            // Show detailed error notification
+            const statusEl = document.getElementById('firebase-status');
+            if (statusEl) {
+                statusEl.innerHTML = '❌ Connection failed<br><small>Using localStorage only</small>';
+                statusEl.style.color = '#ef4444';
+                statusEl.style.fontSize = '0.9rem';
+            }
+            
+            this.showNotification('🔥 Firebase connection failed - Working offline with localStorage only', 'warning', 5000);
+            
+            // Update Firebase option to show error state
+            const firebaseOption = document.getElementById('firebase-option');
+            if (firebaseOption) {
+                firebaseOption.classList.add('error');
+                firebaseOption.title = 'Firebase connection failed - using localStorage';
+            }
+        }
+    }
+    
+    // Check if Firebase is available and reachable
+    async checkFirebaseAvailability() {
+        // Check if Firebase storage is loaded
+        if (!window.firebaseStorage) {
+            console.log('🔥 Firebase storage not available');
+            return false;
+        }
+        
+        // Try to initialize Firebase if not already done
+        if (!window.firebaseStorage.initialized) {
+            let config = localStorage.getItem('firebase_config');
+            if (!config && window.firebaseStorage.constructor.getActualConfig) {
+                config = JSON.stringify(window.firebaseStorage.constructor.getActualConfig());
+            }
+            
+            if (!config) {
+                console.log('🔥 No Firebase config found');
+                return false;
+            }
+            
+            try {
+                const parsedConfig = JSON.parse(config);
+                const initResult = await window.firebaseStorage.initialize(parsedConfig);
+                if (!initResult) {
+                    console.log('🔥 Firebase initialization failed');
+                    return false;
+                }
+            } catch (error) {
+                console.error('❌ Firebase initialization error:', error);
+                return false;
+            }
+        }
+        
+        // Test connectivity with timeout
+        try {
+            const isConnected = await Promise.race([
+                window.firebaseStorage.checkConnection(),
+                new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 5000))
+            ]);
+            
+            console.log('🔥 Firebase connectivity check:', isConnected);
+            return isConnected;
+        } catch (error) {
+            console.log('🔥 Firebase connectivity test failed:', error.message);
+            return false;
+        }
+    }
+    
+    // Load from Firebase with timeout to prevent hanging
+    async loadFromFirebaseWithTimeout() {
+        return Promise.race([
+            window.firebaseStorage.loadEvaluations(),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('Firebase load timeout')), 10000))
+        ]);
+    }
+    
+    // Retry Firebase connection
+    async retryFirebaseConnection() {
+        console.log('🔄 Retrying Firebase connection...');
+        
+        // Show retrying status
+        const statusEl = document.getElementById('firebase-status');
+        if (statusEl) {
+            statusEl.innerHTML = '🔄 Retrying connection...<small>Please wait</small>';
+            statusEl.style.color = '#3b82f6';
+        }
+        
+        this.showNotification('🔄 Retrying Firebase connection...', 'info', 2000);
+        
+        // Remove retry button temporarily
+        const firebaseOption = document.getElementById('firebase-option');
+        const retryBtn = firebaseOption?.querySelector('.retry-btn');
+        if (retryBtn) {
+            retryBtn.style.display = 'none';
+        }
+        
+        // Wait a moment then retry
+        setTimeout(async () => {
+            const isAvailable = await this.checkFirebaseAvailability();
+            
+            if (isAvailable) {
+                // Success! Load the data
+                try {
+                    const historicEvaluations = await this.loadFromFirebaseWithTimeout();
+                    
+                    if (historicEvaluations && historicEvaluations.length > 0) {
+                        const localEvaluations = this.evaluations || [];
+                        const mergedEvaluations = this.mergeHistoricAndLocalData(historicEvaluations, localEvaluations);
+                        this.evaluations = mergedEvaluations;
+                        this.saveEvaluations();
+                        this.renderLeaderboard();
+                        
+                        this.showNotification(`✅ Firebase reconnected! Loaded ${historicEvaluations.length} evaluations`, 'success', 4000);
+                    } else {
+                        this.showNotification('✅ Firebase reconnected!', 'success', 3000);
+                    }
+                    
+                    // Update UI to show connected state
+                    this.updateFirebaseStatus('connected');
+                    this.forceUpdateFirebaseUI();
+                    
+                    // Remove retry button and offline/error classes
+                    if (firebaseOption) {
+                        firebaseOption.classList.remove('offline', 'error');
+                        const retryBtn = firebaseOption.querySelector('.retry-btn');
+                        if (retryBtn) retryBtn.remove();
+                    }
+                    
+                } catch (error) {
+                    console.error('❌ Error loading data after reconnection:', error);
+                    this.showNotification('❌ Firebase reconnected but failed to load data', 'warning', 3000);
+                    this.updateFirebaseStatus('error');
+                }
+            } else {
+                // Still unavailable
+                this.showNotification('❌ Firebase still unreachable', 'warning', 3000);
+                this.updateFirebaseStatus('unavailable');
+                
+                // Show retry button again
+                if (retryBtn) {
+                    retryBtn.style.display = 'inline-block';
+                }
+            }
+        }, 2000);
+    }
+    
+    // Merge historic Firebase data with local localStorage data
+    mergeHistoricAndLocalData(historicData, localData) {
+        console.log(`🔄 Merging ${historicData.length} historic + ${localData.length} local evaluations`);
+        
+        if (!Array.isArray(historicData) || !Array.isArray(localData)) {
+            console.error('❌ Invalid data for merge:', { historicData, localData });
+            return Array.isArray(localData) ? localData : [];
+        }
+        
+        const merged = [];
+        const seenIds = new Set();
+        
+        // Add historic data first (it's likely more comprehensive)
+        historicData.forEach(evaluation => {
+            if (evaluation && evaluation.id) {
+                merged.push(evaluation);
+                seenIds.add(evaluation.id);
+            }
+        });
+        
+        // Add local data that doesn't exist in historic data
+        let newLocalCount = 0;
+        localData.forEach(evaluation => {
+            if (evaluation && evaluation.id && !seenIds.has(evaluation.id)) {
+                merged.push(evaluation);
+                seenIds.add(evaluation.id);
+                newLocalCount++;
+            }
+        });
+        
+        console.log(`📊 Merge result: ${historicData.length} historic + ${localData.length} local → ${merged.length} total (${newLocalCount} new local)`);
+        
+        // Sort by timestamp (newest first) for consistent ordering
+        return merged.sort((a, b) => {
+            const timeA = a.timestamp || 0;
+            const timeB = b.timestamp || 0;
+            return timeB - timeA;
+        });
+    }
+    
     // Firebase Integration Methods
     async checkFirebaseConfig() {
-        const savedConfig = localStorage.getItem('firebase_config');
+        console.log('🔥 checkFirebaseConfig called');
+        
+        // First try localStorage (for backward compatibility)
+        let savedConfig = localStorage.getItem('firebase_config');
+        
+        if (!savedConfig) {
+            // If no localStorage config, use the built-in config
+            console.log('🔥 No localStorage config, using built-in config');
+            if (window.firebaseStorage && window.firebaseStorage.constructor.getActualConfig) {
+                const builtInConfig = window.firebaseStorage.constructor.getActualConfig();
+                savedConfig = JSON.stringify(builtInConfig);
+                console.log('🔥 Using built-in Firebase config');
+            }
+        } else {
+            console.log('🔥 Found saved config in localStorage');
+        }
+        
         if (savedConfig) {
             try {
                 const config = JSON.parse(savedConfig);
-                if (window.firebaseStorage && window.firebaseStorage.constructor.validateConfig(config)) {
+                console.log('🔥 Parsed config:', config);
+                
+                const isValid = window.firebaseStorage && window.firebaseStorage.constructor.validateConfig(config);
+                console.log('🔥 Config validation result:', isValid);
+                
+                if (isValid) {
+                    console.log('🔥 Config is valid, initializing Firebase...');
                     await this.initializeFirebase(config);
+                } else {
+                    console.log('❌ Config validation failed');
+                    // Still update UI to show configured but invalid
+                    this.forceUpdateFirebaseUI();
                 }
             } catch (error) {
-                console.error('Error loading Firebase config:', error);
+                console.error('❌ Error loading Firebase config:', error);
+                // Still update UI to show configured but error
+                this.forceUpdateFirebaseUI();
+            }
+        } else {
+            console.log('🔥 No Firebase config found');
+            // Ensure UI shows not configured
+            const statusEl = document.getElementById('firebase-status');
+            if (statusEl) {
+                statusEl.textContent = 'Not configured';
+                statusEl.style.color = '#6b7280';
             }
         }
     }
     
     async initializeFirebase(config) {
+        console.log('🔥 initializeFirebase called with:', config);
+        
         if (!window.firebaseStorage) {
-            console.error('Firebase storage module not loaded');
+            console.error('❌ Firebase storage module not loaded');
             return;
         }
         
+        console.log('🔥 Starting Firebase initialization...');
         const success = await window.firebaseStorage.initialize(config);
+        console.log('🔥 Initialization result:', success);
+        
         if (success) {
+            console.log('✅ Firebase initialized successfully - updating UI');
             this.updateFirebaseStatus('connected');
-            document.getElementById('setup-firebase').style.display = 'none';
-            document.getElementById('toggle-sync').style.display = 'inline-block';
+            
+            const setupBtn = document.getElementById('setup-firebase');
+            const toggleBtn = document.getElementById('toggle-sync');
+            
+            console.log('🔥 Hiding setup button:', setupBtn);
+            console.log('🔥 Showing toggle button:', toggleBtn);
+            
+            if (setupBtn) setupBtn.style.display = 'none';
+            if (toggleBtn) toggleBtn.style.display = 'inline-block';
             
             // Check if sync was previously enabled
             const syncEnabled = localStorage.getItem('firebase_sync_enabled') === 'true';
+            console.log('🔥 Previous sync state:', syncEnabled);
             if (syncEnabled) {
                 this.enableFirebaseSync();
             }
+        } else {
+            console.error('❌ Firebase initialization failed');
         }
     }
     
@@ -3272,32 +3656,134 @@ class TRUEFramework {
     }
     
     async enableFirebaseSync() {
-        if (!window.firebaseStorage || !window.firebaseStorage.initialized) {
-            this.showNotification('Please configure Firebase first', 'warning');
+        console.log('🔥 enableFirebaseSync called');
+        console.log('🔥 firebaseStorage exists:', !!window.firebaseStorage);
+        console.log('🔥 firebaseStorage.initialized:', window.firebaseStorage?.initialized);
+        
+        if (!window.firebaseStorage) {
+            console.error('❌ firebaseStorage not found');
+            this.showNotification('Firebase storage not loaded', 'error');
             return;
         }
         
-        // Enable sync
-        window.firebaseStorage.enableSync((evaluations) => {
-            // Handle incoming changes from Firebase
-            this.evaluations = evaluations;
-            this.renderLeaderboard();
-            console.log('Evaluations synced from Firebase');
-        });
+        if (!window.firebaseStorage.initialized) {
+            console.log('🔥 Firebase not initialized, trying to initialize...');
+            
+            // Try to get config and initialize
+            let config = localStorage.getItem('firebase_config');
+            if (!config && window.firebaseStorage.constructor.getActualConfig) {
+                config = JSON.stringify(window.firebaseStorage.constructor.getActualConfig());
+            }
+            
+            if (config) {
+                try {
+                    const parsedConfig = JSON.parse(config);
+                    console.log('🔥 Attempting to initialize Firebase with config:', parsedConfig);
+                    const initResult = await window.firebaseStorage.initialize(parsedConfig);
+                    console.log('🔥 Initialization result:', initResult);
+                    
+                    if (!initResult) {
+                        this.showNotification('Failed to initialize Firebase', 'error');
+                        return;
+                    }
+                } catch (error) {
+                    console.error('❌ Error initializing Firebase:', error);
+                    this.showNotification('Error initializing Firebase', 'error');
+                    return;
+                }
+            } else {
+                console.error('❌ No Firebase config found');
+                this.showNotification('Please configure Firebase first', 'warning');
+                return;
+            }
+        }
         
-        // Initial sync - upload local data to Firebase
-        await window.firebaseStorage.saveEvaluations(this.evaluations);
+        console.log('🔥 Enabling Firebase sync...');
         
-        localStorage.setItem('firebase_sync_enabled', 'true');
-        this.updateFirebaseStatus('syncing');
+        try {
+            // Enable sync
+            window.firebaseStorage.enableSync((evaluations) => {
+                // Handle incoming changes from Firebase
+                this.evaluations = evaluations;
+                this.renderLeaderboard();
+                console.log('Evaluations synced from Firebase');
+            });
+            
+            console.log('🔥 Sync enabled, uploading current data...');
+            
+            // Initial sync - merge and upload local data to Firebase
+            // Filter out auto-generated demo evaluations to avoid polluting Firebase
+            const realEvaluations = this.evaluations.filter(e => !e.autoGenerated);
+            const saveResult = await window.firebaseStorage.saveEvaluations(realEvaluations);
+            console.log('🔥 Save result:', saveResult);
+            
+            localStorage.setItem('firebase_sync_enabled', 'true');
+            this.updateFirebaseStatus('syncing');
+            
+            // Update UI to reflect sync is now active
+            this.forceUpdateFirebaseUI();
+            
+            this.showNotification('Firebase sync enabled - data will sync across devices', 'success');
+            console.log('✅ Firebase sync enabled successfully');
+            
+            // Show storage statistics
+            setTimeout(async () => {
+                const stats = await window.firebaseStorage.getStorageStats();
+                if (stats) {
+                    console.log('📊 Firebase Storage Stats:', stats);
+                    this.showNotification(`📊 Syncing ${stats.totalEvaluations} evaluations (500 max)`, 'info', 5000);
+                }
+            }, 2000);
+            
+            // Set up periodic sync to keep data fresh (every 5 minutes)
+            this.setupPeriodicFirebaseSync();
+            
+        } catch (error) {
+            console.error('❌ Error enabling sync:', error);
+            this.showNotification('Error enabling Firebase sync', 'error');
+        }
+    }
+    
+    setupPeriodicFirebaseSync() {
+        // Clear any existing sync interval
+        if (this.firebaseSyncInterval) {
+            clearInterval(this.firebaseSyncInterval);
+        }
         
-        document.getElementById('toggle-sync').textContent = 'Disable Sync';
-        document.getElementById('toggle-sync').onclick = () => this.disableFirebaseSync();
+        // Set up periodic sync every 5 minutes
+        this.firebaseSyncInterval = setInterval(async () => {
+            try {
+                console.log('🔄 Periodic Firebase sync...');
+                
+                if (window.firebaseStorage && window.firebaseStorage.initialized) {
+                    // Sync latest data from Firebase
+                    const historicEvaluations = await window.firebaseStorage.loadEvaluations();
+                    
+                    if (historicEvaluations && historicEvaluations.length > 0) {
+                        // Merge with local data
+                        this.mergeEvaluations(historicEvaluations);
+                        console.log(`📥 Periodic sync: ${historicEvaluations.length} evaluations from Firebase`);
+                    }
+                } else {
+                    console.log('⚠️ Firebase not initialized, skipping periodic sync');
+                }
+                
+            } catch (error) {
+                console.error('❌ Error during periodic Firebase sync:', error);
+            }
+        }, 5 * 60 * 1000); // 5 minutes
         
-        this.showNotification('Firebase sync enabled - data will sync across devices', 'success');
+        console.log('⏰ Periodic Firebase sync set up (every 5 minutes)');
     }
     
     async disableFirebaseSync() {
+        // Clear periodic sync interval
+        if (this.firebaseSyncInterval) {
+            clearInterval(this.firebaseSyncInterval);
+            this.firebaseSyncInterval = null;
+            console.log('⏹️ Periodic Firebase sync stopped');
+        }
+        
         if (window.firebaseStorage) {
             window.firebaseStorage.disableSync();
         }
@@ -3305,8 +3791,8 @@ class TRUEFramework {
         localStorage.setItem('firebase_sync_enabled', 'false');
         this.updateFirebaseStatus('connected');
         
-        document.getElementById('toggle-sync').textContent = 'Enable Sync';
-        document.getElementById('toggle-sync').onclick = () => this.enableFirebaseSync();
+        // Update UI to reflect sync is now disabled
+        this.forceUpdateFirebaseUI();
         
         this.showNotification('Firebase sync disabled', 'info');
     }
@@ -3320,31 +3806,148 @@ class TRUEFramework {
         }
     }
     
+    forceUpdateFirebaseUI() {
+        console.log('🔥 forceUpdateFirebaseUI called');
+        
+        // Check for config in localStorage or built-in
+        let savedConfig = localStorage.getItem('firebase_config');
+        if (!savedConfig && window.firebaseStorage?.constructor?.getActualConfig) {
+            savedConfig = JSON.stringify(window.firebaseStorage.constructor.getActualConfig());
+        }
+        
+        const setupBtn = document.getElementById('setup-firebase');
+        const toggleBtn = document.getElementById('toggle-sync');
+        const statusEl = document.getElementById('firebase-status');
+        
+        console.log('🔥 Has saved config:', !!savedConfig);
+        console.log('🔥 Setup button:', setupBtn);
+        console.log('🔥 Toggle button:', toggleBtn);
+        console.log('🔥 Status element:', statusEl);
+        
+        if (savedConfig) {
+            try {
+                const config = JSON.parse(savedConfig);
+                console.log('🔥 Parsed config:', config);
+                
+                const isValid = window.firebaseStorage?.constructor?.validateConfig?.(config);
+                console.log('🔥 Config valid:', isValid);
+                console.log('🔥 Firebase initialized:', window.firebaseStorage?.initialized);
+                
+                if (isValid) {
+                    // Always update UI elements if they exist
+                    if (setupBtn) setupBtn.style.display = 'none';
+                    if (toggleBtn) toggleBtn.style.display = 'inline-block';
+                    
+                    // Check if sync is currently enabled
+                    const syncEnabled = localStorage.getItem('firebase_sync_enabled') === 'true';
+                    
+                    // Update status based on initialization and sync state
+                    if (statusEl) {
+                        if (window.firebaseStorage?.initialized) {
+                            if (syncEnabled) {
+                                statusEl.textContent = '✅ Sync Active';
+                                statusEl.style.color = '#10b981';
+                            } else {
+                                statusEl.textContent = 'Connected - Click Enable Sync';
+                                statusEl.style.color = '#3b82f6';
+                            }
+                        } else {
+                            statusEl.textContent = 'Configured - Click Enable Sync';
+                            statusEl.style.color = '#f59e0b';
+                        }
+                    }
+                    
+                    // Set up click handler and update button text
+                    if (toggleBtn) {
+                        toggleBtn.onclick = () => this.toggleFirebaseSync();
+                        toggleBtn.textContent = syncEnabled ? 'Disable Sync' : 'Enable Sync';
+                        toggleBtn.style.display = 'inline-block';
+                    }
+                    
+                    // Update persistence options active states
+                    const localStorageOption = document.getElementById('local-storage-option');
+                    const firebaseOption = document.getElementById('firebase-option');
+                    
+                    if (localStorageOption && firebaseOption) {
+                        if (syncEnabled) {
+                            // Firebase is active
+                            localStorageOption.classList.remove('active');
+                            firebaseOption.classList.add('active');
+                            
+                            // Update headings
+                            localStorageOption.querySelector('h4').textContent = 'Local Storage (Backup)';
+                            firebaseOption.querySelector('h4').textContent = 'Firebase Cloud Sync (Active)';
+                        } else {
+                            // Local storage is active
+                            localStorageOption.classList.add('active');
+                            firebaseOption.classList.remove('active');
+                            
+                            // Update headings
+                            localStorageOption.querySelector('h4').textContent = 'Local Storage (Active)';
+                            firebaseOption.querySelector('h4').textContent = 'Firebase Cloud Sync';
+                        }
+                    }
+                    
+                    console.log('✅ Firebase UI updated successfully');
+                    return true;
+                }
+            } catch (error) {
+                console.error('❌ Error updating Firebase UI:', error);
+            }
+        }
+        
+        console.log('❌ Firebase UI update failed');
+        return false;
+    }
+    
     updateFirebaseStatus(status) {
         const statusEl = document.getElementById('firebase-status');
         const optionEl = document.getElementById('firebase-option');
         
         if (statusEl) {
+            // Reset classes
+            statusEl.className = '';
+            if (optionEl) {
+                optionEl.classList.remove('active', 'offline', 'error');
+            }
+            
             switch(status) {
                 case 'connected':
-                    statusEl.textContent = 'Connected (not syncing)';
-                    statusEl.style.color = '#f59e0b';
+                    statusEl.innerHTML = '🟢 Connected<br><small>Click "Enable Sync" to start</small>';
+                    statusEl.style.color = '#10b981';
+                    statusEl.style.fontSize = '0.9rem';
                     break;
                 case 'syncing':
-                    statusEl.textContent = 'Syncing enabled';
+                    statusEl.innerHTML = '🔄 Syncing enabled<br><small>Data synced across devices</small>';
                     statusEl.style.color = '#10b981';
+                    statusEl.style.fontSize = '0.9rem';
                     if (optionEl) {
                         optionEl.classList.add('active');
                         document.getElementById('local-storage-option').classList.remove('active');
                     }
                     break;
                 case 'error':
-                    statusEl.textContent = 'Connection error';
+                    statusEl.innerHTML = '❌ Connection error<br><small>Using localStorage only</small>';
                     statusEl.style.color = '#ef4444';
+                    statusEl.style.fontSize = '0.9rem';
+                    if (optionEl) {
+                        optionEl.classList.add('error');
+                        optionEl.title = 'Firebase connection failed - using localStorage';
+                    }
+                    break;
+                case 'unavailable':
+                    statusEl.innerHTML = '⚠️ Firebase unreachable<br><small>Using localStorage only</small>';
+                    statusEl.style.color = '#f59e0b';
+                    statusEl.style.fontSize = '0.9rem';
+                    if (optionEl) {
+                        optionEl.classList.add('offline');
+                        optionEl.title = 'Firebase is currently unreachable - using localStorage';
+                    }
                     break;
                 default:
-                    statusEl.textContent = 'Not configured';
+                    statusEl.innerHTML = '🔴 Not configured<br><small>Local storage only</small>';
                     statusEl.style.color = '#6b7280';
+                    statusEl.style.fontSize = '0.9rem';
             }
         }
     }
@@ -3353,9 +3956,10 @@ class TRUEFramework {
     saveEvaluations() {
         localStorage.setItem('true_evaluations', JSON.stringify(this.evaluations));
         
-        // Also save to Firebase if sync is enabled
+        // Also save to Firebase if sync is enabled, but filter out auto-generated demo evaluations
         if (window.firebaseStorage && window.firebaseStorage.syncEnabled) {
-            window.firebaseStorage.saveEvaluations(this.evaluations).catch(error => {
+            const realEvaluations = this.evaluations.filter(e => !e.autoGenerated);
+            window.firebaseStorage.saveEvaluations(realEvaluations).catch(error => {
                 console.error('Firebase sync error:', error);
             });
         }

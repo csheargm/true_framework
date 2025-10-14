@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Reset Firebase</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        button { padding: 10px 20px; margin: 10px; cursor: pointer; border-radius: 5px; }
+        .danger { background: #ef4444; color: white; border: none; }
+        .danger:hover { background: #dc2626; }
+        .safe { background: #3b82f6; color: white; border: none; }
+        .safe:hover { background: #2563eb; }
+        .status { padding: 10px; margin: 10px 0; border-radius: 5px; }
+        .success { background: #d4edda; color: #155724; }
+        .error { background: #f8d7da; color: #721c24; }
+        .warning { background: #fff3cd; color: #856404; }
+    </style>
+</head>
+<body>
+    <h1>🔥 Firebase Reset</h1>
+    
+    <div class="status warning">
+        <strong>⚠️ Warning:</strong> This will permanently delete all evaluation data from Firebase. Use with caution!
+    </div>
+    
+    <button class="danger" onclick="clearFirebaseData()">Clear All Firebase Data</button>
+    <button class="safe" onclick="checkFirebaseStatus()">Check Firebase Status</button>
+    <button class="safe" onclick="window.location.href='index.html'">Back to App</button>
+    
+    <div id="status"></div>
+
+    <!-- Firebase SDK -->
+    <script src="https://www.gstatic.com/firebasejs/9.22.1/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.1/firebase-database-compat.js"></script>
+    <script src="firebase-config.js"></script>
+    
+    <script>
+        let statusDiv = document.getElementById('status');
+        
+        function log(message, type = 'info') {
+            const timestamp = new Date().toLocaleTimeString();
+            const logEntry = document.createElement('div');
+            logEntry.className = `status ${type}`;
+            logEntry.innerHTML = `<strong>[${timestamp}]</strong> ${message}`;
+            statusDiv.appendChild(logEntry);
+            console.log(`[${timestamp}] ${message}`);
+        }
+        
+        async function checkFirebaseStatus() {
+            log('Checking Firebase status...', 'info');
+            try {
+                const config = firebaseConfig.getActualConfig();
+                if (!config) {
+                    log('❌ Firebase configuration not found', 'error');
+                    return;
+                }
+                
+                if (!firebase.apps.length) {
+                    firebase.initializeApp(config);
+                }
+                
+                const database = firebase.database();
+                const snapshot = await database.ref('evaluations').once('value');
+                const data = snapshot.val();
+                
+                if (data && Object.keys(data).length > 0) {
+                    log(`📊 Firebase contains ${Object.keys(data).length} evaluations`, 'warning');
+                } else {
+                    log('✅ Firebase is empty', 'success');
+                }
+                
+            } catch (error) {
+                log(`❌ Error checking Firebase: ${error.message}`, 'error');
+            }
+        }
+        
+        async function clearFirebaseData() {
+            if (!confirm('Are you sure you want to delete ALL Firebase data? This cannot be undone!')) {
+                return;
+            }
+            
+            log('Clearing Firebase data...', 'warning');
+            try {
+                const config = firebaseConfig.getActualConfig();
+                if (!config) {
+                    log('❌ Firebase configuration not found', 'error');
+                    return;
+                }
+                
+                if (!firebase.apps.length) {
+                    firebase.initializeApp(config);
+                }
+                
+                const database = firebase.database();
+                await database.ref('evaluations').remove();
+                
+                log('✅ Firebase data cleared successfully', 'success');
+                
+                // Also clear localStorage to match
+                localStorage.removeItem('true_evaluations');
+                localStorage.removeItem('firebase_sync_enabled');
+                log('🗑️ LocalStorage cleared', 'info');
+                
+            } catch (error) {
+                log(`❌ Error clearing Firebase: ${error.message}`, 'error');
+            }
+        }
+        
+        // Auto-check status on page load
+        window.addEventListener('load', () => {
+            setTimeout(checkFirebaseStatus, 1000);
+        });
+    </script>
+</body>
+</html>

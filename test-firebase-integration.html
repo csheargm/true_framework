@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Firebase Integration Test</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .status { padding: 10px; margin: 10px 0; border-radius: 5px; }
+        .success { background-color: #d4edda; color: #155724; }
+        .error { background-color: #f8d7da; color: #721c24; }
+        .info { background-color: #d1ecf1; color: #0c5460; }
+        button { padding: 10px 20px; margin: 5px; cursor: pointer; }
+        pre { background: #f8f9fa; padding: 10px; border-radius: 5px; overflow-x: auto; }
+    </style>
+</head>
+<body>
+    <h1>Firebase Integration Test</h1>
+    
+    <div id="status" class="status info">Testing Firebase connection...</div>
+    
+    <button onclick="testFirebaseConnection()">Test Connection</button>
+    <button onclick="testDataSync()">Test Data Sync</button>
+    <button onclick="testDataLimit()">Test 500 Row Limit</button>
+    <button onclick="clearTestData()">Clear Test Data</button>
+    
+    <div id="results"></div>
+
+    <!-- Firebase SDK -->
+    <script src="https://www.gstatic.com/firebasejs/9.22.1/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.1/firebase-database-compat.js"></script>
+    
+    <script src="firebase-config.js"></script>
+    <script>
+        let testResults = document.getElementById('results');
+        let statusDiv = document.getElementById('status');
+        
+        function log(message, type = 'info') {
+            const timestamp = new Date().toLocaleTimeString();
+            const logEntry = document.createElement('div');
+            logEntry.className = `status ${type}`;
+            logEntry.innerHTML = `<strong>[${timestamp}]</strong> ${message}`;
+            testResults.appendChild(logEntry);
+            console.log(`[${timestamp}] ${message}`);
+        }
+        
+        function updateStatus(message, type = 'info') {
+            statusDiv.className = `status ${type}`;
+            statusDiv.textContent = message;
+        }
+        
+        async function testFirebaseConnection() {
+            log('Testing Firebase connection...', 'info');
+            try {
+                const config = firebaseConfig.getActualConfig();
+                if (!config) {
+                    throw new Error('Firebase configuration not found');
+                }
+                
+                // Initialize Firebase if not already done
+                if (!firebase.apps.length) {
+                    firebase.initializeApp(config);
+                }
+                
+                const database = firebase.database();
+                const testRef = database.ref('connection-test');
+                
+                // Test write
+                await testRef.set({
+                    timestamp: firebase.database.ServerValue.TIMESTAMP,
+                    test: true
+                });
+                
+                // Test read
+                const snapshot = await testRef.once('value');
+                const data = snapshot.val();
+                
+                if (data && data.test) {
+                    log('✅ Firebase connection successful!', 'success');
+                    updateStatus('Firebase connected', 'success');
+                } else {
+                    throw new Error('Test data not found');
+                }
+                
+                // Clean up test data
+                await testRef.remove();
+                
+            } catch (error) {
+                log(`❌ Firebase connection failed: ${error.message}`, 'error');
+                updateStatus('Firebase connection failed', 'error');
+            }
+        }
+        
+        async function testDataSync() {
+            log('Testing data synchronization...', 'info');
+            try {
+                // Create test evaluation
+                const testEvaluation = {
+                    id: 'test-' + Date.now(),
+                    timestamp: new Date().toISOString(),
+                    projectName: 'Test Project',
+                    modelName: 'Test Model',
+                    overallScore: 85,
+                    criteria: {
+                        criterion1: { score: 90, weight: 0.5 },
+                        criterion2: { score: 80, weight: 0.5 }
+                    },
+                    recommendations: ['Test recommendation'],
+                    status: 'completed',
+                    isTest: true
+                };
+                
+                // Test saving to Firebase
+                await firebaseConfig.saveEvaluation(testEvaluation);
+                log('✅ Data saved to Firebase successfully', 'success');
+                
+                // Test loading from Firebase
+                const loadedData = await firebaseConfig.loadEvaluations();
+                const foundTest = loadedData.find(e => e.id === testEvaluation.id);
+                
+                if (foundTest) {
+                    log('✅ Data loaded from Firebase successfully', 'success');
+                    log(`Found test evaluation: ${foundTest.projectName}`, 'info');
+                } else {
+                    throw new Error('Test evaluation not found in loaded data');
+                }
+                
+            } catch (error) {
+                log(`❌ Data sync test failed: ${error.message}`, 'error');
+            }
+        }
+        
+        async function testDataLimit() {
+            log('Testing 500 row limit functionality...', 'info');
+            try {
+                // Get current count
+                const currentData = await firebaseConfig.loadEvaluations();
+                const currentCount = currentData.filter(e => !e.isTest).length;
+                
+                log(`Current evaluation count: ${currentCount}`, 'info');
+                
+                // Test the limit function directly
+                const testData = Array.from({length: 600}, (_, i) => ({
+                    id: `limit-test-${i}`,
+                    timestamp: new Date().toISOString(),
+                    projectName: `Limit Test ${i}`,
+                    isTest: true
+                }));
+                
+                const limitedData = firebaseConfig.limitEvaluations(testData);
+                log(`Limited ${testData.length} items to ${limitedData.length} items`, 'info');
+                
+                if (limitedData.length <= 500) {
+                    log('✅ 500 row limit working correctly', 'success');
+                } else {
+                    throw new Error(`Limit not working: expected ≤500, got ${limitedData.length}`);
+                }
+                
+            } catch (error) {
+                log(`❌ Limit test failed: ${error.message}`, 'error');
+            }
+        }
+        
+        async function clearTestData() {
+            log('Clearing test data...', 'info');
+            try {
+                const allData = await firebaseConfig.loadEvaluations();
+                const testData = allData.filter(e => e.isTest);
+                
+                for (const testEval of testData) {
+                    await firebaseConfig.deleteEvaluation(testEval.id);
+                }
+                
+                log(`✅ Cleared ${testData.length} test evaluations`, 'success');
+                
+            } catch (error) {
+                log(`❌ Clear test data failed: ${error.message}`, 'error');
+            }
+        }
+        
+        // Auto-test on page load
+        window.addEventListener('load', () => {
+            setTimeout(testFirebaseConnection, 1000);
+        });
+    </script>
+</body>
+</html>
