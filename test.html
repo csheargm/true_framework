@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TRUE Framework Test</title>
+</head>
+<body>
+    <h1>Quick Test</h1>
+    <p>Open the browser console (F12) to see any errors.</p>
+    <p>Then <a href="index.html">Go to main app</a></p>
+    
+    <script>
+        console.log('Test page loaded');
+        
+        // Test if JavaScript is working
+        document.addEventListener('DOMContentLoaded', () => {
+            console.log('DOM loaded');
+            
+            // Create a test button
+            const btn = document.createElement('button');
+            btn.textContent = 'Test Click';
+            btn.onclick = () => alert('JavaScript is working!');
+            document.body.appendChild(btn);
+        });
+    </script>
+</body>
+</html>
