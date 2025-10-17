@@ -147,24 +147,24 @@ class FirebaseStorage {
             console.error('❌ Invalid arrays for merge:', { existing, newEvals });
             return Array.isArray(newEvals) ? [...newEvals] : [];
         }
-        
+
         const merged = [...existing];
         const existingIds = new Set();
-        
+
         // Build set of existing IDs, handling undefined/null
         existing.forEach(e => {
             if (e && e.id) {
                 existingIds.add(e.id);
             }
         });
-        
+
         for (const newEval of newEvals) {
             // Skip invalid evaluations
             if (!newEval || !newEval.id) {
                 console.warn('⚠️ Skipping invalid evaluation:', newEval);
                 continue;
             }
-            
+
             if (!existingIds.has(newEval.id)) {
                 merged.push(newEval);
                 existingIds.add(newEval.id);
@@ -174,7 +174,7 @@ class FirebaseStorage {
                 if (existingIndex !== -1) {
                     const existingTimestamp = merged[existingIndex].timestamp || 0;
                     const newTimestamp = newEval.timestamp || 0;
-                    
+
                     if (newTimestamp > existingTimestamp) {
                         merged[existingIndex] = newEval;
                         console.log(`🔄 Updated evaluation ${newEval.id} with newer data`);
@@ -182,9 +182,52 @@ class FirebaseStorage {
                 }
             }
         }
-        
+
         console.log(`📊 Merge result: ${existing.length} + ${newEvals.length} → ${merged.length} evaluations`);
-        return merged;
+
+        // Deduplicate by model name (case-insensitive) to prevent duplicate display names
+        const deduplicated = this.deduplicateByModelName(merged);
+        if (deduplicated.length < merged.length) {
+            console.log(`🔄 Removed ${merged.length - deduplicated.length} duplicate model names`);
+        }
+
+        return deduplicated;
+    }
+
+    // Deduplicate evaluations by model name (case-insensitive)
+    deduplicateByModelName(evaluations) {
+        const uniqueByName = new Map();
+        const evalCounts = new Map();
+
+        // Process each evaluation
+        evaluations.forEach(evaluation => {
+            if (!evaluation || !evaluation.modelName) return;
+
+            const modelKey = evaluation.modelName.toLowerCase().trim();
+            const existing = uniqueByName.get(modelKey);
+
+            // Accumulate eval counts
+            const currentEvalCount = evaluation.evalCount || 1;
+            evalCounts.set(modelKey, (evalCounts.get(modelKey) || 0) + currentEvalCount);
+
+            // Keep evaluation with highest score, or latest timestamp if scores equal
+            if (!existing ||
+                evaluation.totalScore > existing.totalScore ||
+                (evaluation.totalScore === existing.totalScore &&
+                 (evaluation.timestamp || 0) > (existing.timestamp || 0))) {
+                uniqueByName.set(modelKey, evaluation);
+            }
+        });
+
+        // Update eval counts on the kept evaluations and normalize model names
+        return Array.from(uniqueByName.values()).map(evaluation => {
+            const modelKey = evaluation.modelName.toLowerCase().trim();
+            const count = evalCounts.get(modelKey) || 1;
+            evaluation.evalCount = Math.max(count, evaluation.evalCount || 1);
+            // Ensure modelName is always stored in lowercase
+            evaluation.modelName = modelKey;
+            return evaluation;
+        });
     }
     
     // Limit evaluations to the most recent N items

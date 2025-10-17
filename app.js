@@ -154,7 +154,7 @@ class TRUEFramework {
                     }
                 }
                 
-                this.showNotification('✨ Data refreshed', 'info', 2000);
+                // Data refreshed - no notification needed
             }
         });
         
@@ -245,30 +245,44 @@ class TRUEFramework {
     }
     
     async getDynamicModelEvaluations() {
+        console.log('🟢 getDynamicModelEvaluations START');
+
         // Get current suggestions
         const cached = localStorage.getItem('true_suggestions_cache');
         let suggestions = {};
-        
+
+        console.log('🟢 Cached suggestions exist:', !!cached);
+
         if (cached) {
             const data = JSON.parse(cached);
             suggestions = data.suggestions || {};
+            console.log('🟢 Using cached suggestions, categories:', Object.keys(suggestions));
         } else {
-            // Use default suggestions from fetchTrendingModels
-            suggestions = await this.fetchTrendingModels();
+            // Try to fetch trending models, with error handling
+            console.log('🟢 No cache, fetching trending models...');
+            try {
+                suggestions = await this.fetchTrendingModels();
+                console.log('🟢 Fetched suggestions, categories:', Object.keys(suggestions));
+            } catch (error) {
+                console.error('🔴 Error fetching trending models:', error);
+                suggestions = {};
+            }
         }
-        
+
         // Convert suggestions to evaluations format
         const dynamicEvaluations = {};
         let index = 0;
-        
+
+        console.log('🟢 Converting suggestions to evaluations...');
         for (const [category, models] of Object.entries(suggestions)) {
             if (Array.isArray(models)) {
+                console.log(`🟢 Processing category "${category}" with ${models.length} models`);
                 for (const model of models) {
                     const key = `dynamic-${index++}`;
                     // Check if we already have a predefined evaluation
-                    const existingEval = typeof modelEvaluations !== 'undefined' ? 
+                    const existingEval = typeof modelEvaluations !== 'undefined' ?
                         Object.values(modelEvaluations).find(e => e.name === model.name) : null;
-                    
+
                     if (existingEval) {
                         dynamicEvaluations[key] = existingEval;
                     } else {
@@ -278,7 +292,17 @@ class TRUEFramework {
                 }
             }
         }
-        
+
+        console.log('🟢 Dynamic evaluations created:', Object.keys(dynamicEvaluations).length);
+
+        // If no dynamic evaluations were created (API failed and no cache), use predefined models as fallback
+        if (Object.keys(dynamicEvaluations).length === 0 && typeof modelEvaluations !== 'undefined') {
+            console.log('🟡 No dynamic models available, using predefined models as fallback');
+            console.log('🟡 Predefined models count:', Object.keys(modelEvaluations).length);
+            return modelEvaluations;
+        }
+
+        console.log(`🟢 getDynamicModelEvaluations returning ${Object.keys(dynamicEvaluations).length} models`);
         return dynamicEvaluations;
     }
     
@@ -327,190 +351,193 @@ class TRUEFramework {
     }
 
     async checkAndPopulateInitialEvaluations() {
-        // Check if Firebase sync is enabled - if so, don't auto-populate with demo data
-        const firebaseSyncEnabled = localStorage.getItem('firebase_sync_enabled') === 'true';
-        if (firebaseSyncEnabled && window.firebaseStorage && window.firebaseStorage.initialized) {
-            console.log('🔥 Firebase sync enabled - skipping auto-population of demo evaluations');
+        console.log('🔵 === START: Auto-evaluate popular models ===');
+
+        // Step 1: Get latest popular models from HuggingFace
+        const dynamicModelEvaluations = await this.getDynamicModelEvaluations();
+
+        if (!dynamicModelEvaluations || Object.keys(dynamicModelEvaluations).length === 0) {
+            console.error('🔴 No popular models available!');
             return;
         }
-        
-        // Get dynamic evaluations based on current suggestions
-        const dynamicModelEvaluations = await this.getDynamicModelEvaluations();
-        
-        console.log('checkAndPopulateInitialEvaluations called');
-        console.log('Dynamic evaluations count:', Object.keys(dynamicModelEvaluations || {}).length);
-        console.log('Current evaluations count before:', this.evaluations.length);
-        
-        if (dynamicModelEvaluations && Object.keys(dynamicModelEvaluations).length > 0) {
-            const totalModels = Object.keys(dynamicModelEvaluations).length;
-            
-            // Check if model count has changed from last visit
-            const lastModelCount = parseInt(localStorage.getItem('true_last_model_count') || '0');
-            if (lastModelCount !== totalModels && lastModelCount > 0) {
-                const diff = totalModels - lastModelCount;
-                const changeText = diff > 0 ? `📈 ${diff} new models added!` : `📉 ${Math.abs(diff)} models removed`;
-                this.showNotification(`Model library updated: ${changeText}`, 'info', 5000);
+
+        console.log('🔵 Step 1: Fetched', Object.keys(dynamicModelEvaluations).length, 'popular models');
+
+        // Step 2: Populate currentPopularModels set (for Current Run filter)
+        this.currentPopularModels.clear();
+        for (const modelData of Object.values(dynamicModelEvaluations)) {
+            if (modelData && modelData.name) {
+                this.currentPopularModels.add(this.normalizeModelName(modelData.name));
             }
-            localStorage.setItem('true_last_model_count', totalModels.toString());
-            
-            console.log(`Auto-evaluating ${totalModels} popular models...`);
-            
-            // Track which models already exist to update counts
-            const existingModels = {};
-            this.evaluations.forEach(evaluation => {
-                if (!existingModels[evaluation.modelName]) {
-                    existingModels[evaluation.modelName] = [];
-                }
-                existingModels[evaluation.modelName].push(evaluation);
-            });
-            
-            let addedCount = 0;
-            let updatedCount = 0;
-            
-            // Clear and rebuild the current popular models set
-            this.currentPopularModels.clear();
-            
-            // Initialize current run counts for all popular models on first visit
-            const isFirstVisit = Object.keys(this.currentRunCounts).length === 0;
-            
-            console.log(`Processing ${Object.keys(dynamicModelEvaluations).length} models. First visit: ${isFirstVisit}`);
-            
-            // Create or update evaluations for each model
-            for (const [key, modelData] of Object.entries(dynamicModelEvaluations)) {
-                // Validate and fix URLs before processing
-                this.validateAndFixUrls(modelData);
-                
-                // Track this model as being in the current popular list
-                this.currentPopularModels.add(modelData.name);
-                
-                // Get existing evaluation to check historic count
-                const existingEvalForCount = this.evaluations.find(e => 
-                    e.modelName.toLowerCase() === modelData.name.toLowerCase()
-                );
-                
-                // Initialize current run count on first visit
-                if (isFirstVisit) {
-                    // If model exists in history, inherit its evalCount, otherwise start at 1
-                    if (existingEvalForCount && existingEvalForCount.evalCount) {
-                        this.currentRunCounts[modelData.name] = existingEvalForCount.evalCount;
-                        console.log(`Inherited count ${existingEvalForCount.evalCount} from history for ${modelData.name}`);
-                    } else {
-                        this.currentRunCounts[modelData.name] = 1;
-                    }
-                }
-                
-                console.log(`Processing ${modelData.name}: has scores = ${!!modelData.scores}`)
-                
-                // Always process model, even without scores
-                const sessionId = this.getOrCreateSessionId();
-                const existingEval = this.evaluations.find(e => 
-                    e.modelName.toLowerCase() === modelData.name.toLowerCase()
-                );
-                
-                if (modelData.scores) {
-                    // Model has score data
-                    if (existingEval) {
-                        // Update existing evaluation and increment count
-                        const previousCount = existingEval.evalCount || 1;
-                        existingEval.evalCount = previousCount + 1;
-                        existingEval.lastModified = Date.now();
-                        existingEval.totalScore = modelData.totalScore;
-                        existingEval.tier = modelData.tier || this.getTier(modelData.totalScore).name;
-                        // Update the timestamp to reflect this re-evaluation
-                        existingEval.timestamp = Date.now();
-                        
-                        // Track current run count - increment based on stored evalCount
-                        if (!isFirstVisit) {
-                            // Subsequent refresh in same session - increment from history's evalCount
-                            this.currentRunCounts[modelData.name] = existingEval.evalCount;
-                        }
-                        // First visit count was already set above (inherited from history)
-                        
-                        console.log(`Incremented ${modelData.name} eval count from ${previousCount} to ${existingEval.evalCount} (Current run: ${this.currentRunCounts[modelData.name]})`);
-                        updatedCount++;
-                    } else {
-                        // Collect evidence from the scores structure
-                        const evidence = {};
-                        for (const [dimension, criteria] of Object.entries(modelData.scores)) {
-                            for (const [criterion, data] of Object.entries(criteria)) {
-                                if (data.evidence) {
-                                    evidence[criterion] = data.evidence;
-                                }
+        }
+        console.log('🔵 Step 2: Populated currentPopularModels with', this.currentPopularModels.size, 'models');
+
+        // Step 3: Auto-evaluate all popular models (create new or update existing)
+        console.log('🔵 Step 3: Auto-evaluating popular models...');
+        console.log('🔵 Existing evaluations before:', this.evaluations.length);
+
+        const totalModels = Object.keys(dynamicModelEvaluations).length;
+
+        // Check if model count has changed from last visit
+        const lastModelCount = parseInt(localStorage.getItem('true_last_model_count') || '0');
+        if (lastModelCount !== totalModels && lastModelCount > 0) {
+            const diff = totalModels - lastModelCount;
+            const changeText = diff > 0 ? `📈 ${diff} new models added!` : `📉 ${Math.abs(diff)} models removed`;
+            // Model library updated - no notification needed
+        }
+        localStorage.setItem('true_last_model_count', totalModels.toString());
+
+        let addedCount = 0;
+        let updatedCount = 0;
+
+        // Process each popular model
+        console.log(`Processing ${totalModels} popular models...`);
+
+        // Create or update evaluations for each model
+        for (const [key, modelData] of Object.entries(dynamicModelEvaluations)) {
+            // Validate and fix URLs before processing
+            this.validateAndFixUrls(modelData);
+
+            console.log(`Processing ${modelData.name}...`);
+
+            // Always process model, even without scores
+            const sessionId = this.getOrCreateSessionId();
+            const normalizedName = this.normalizeModelName(modelData.name);
+            const existingEval = this.evaluations.find(e =>
+                e.modelName === normalizedName
+            );
+
+            if (modelData.scores) {
+                // Model has score data
+                if (existingEval) {
+                    // OVERWRITE existing evaluation with new values
+                    console.log(`  → Updating existing evaluation`);
+
+                    // Collect evidence from the scores structure
+                    const evidence = {};
+                    for (const [dimension, criteria] of Object.entries(modelData.scores)) {
+                        for (const [criterion, data] of Object.entries(criteria)) {
+                            if (data.evidence) {
+                                evidence[criterion] = data.evidence;
                             }
                         }
-                        
-                        // Add new evaluation for this visit
-                        const evaluation = {
-                            id: this.generateId(),
-                            sessionId: sessionId,
-                            modelName: modelData.name,
-                            modelUrl: modelData.url,
-                            scores: this.extractScoresFromModelData(modelData.scores),
-                            evidence: evidence,
-                            totalScore: modelData.totalScore,
-                            tier: modelData.tier || this.getTier(modelData.totalScore).name,
-                            notes: modelData.notes || 'Auto-evaluated by TRUE Framework',
-                            timestamp: Date.now() - Math.random() * 3600000, // Randomize within last hour
-                            modified: false,
-                            autoGenerated: true, // Mark as auto-generated
-                            evalCount: 1 // Initialize evaluation count
-                        };
-                        this.evaluations.push(evaluation);
-                        
-                        // Current run count was already initialized above for all models
-                        
-                        addedCount++;
                     }
+
+                    // Overwrite with new data
+                    existingEval.scores = this.extractScoresFromModelData(modelData.scores);
+                    existingEval.evidence = evidence;
+                    existingEval.totalScore = modelData.totalScore;
+                    existingEval.tier = modelData.tier || this.getTier(modelData.totalScore).name;
+                    existingEval.timestamp = Date.now();
+                    existingEval.lastModified = Date.now();
+                    existingEval.autoGenerated = true;
+                    existingEval.evalCount = 1; // Set to 1 for current run
+                    existingEval.modelName = normalizedName; // Ensure name is normalized
+
+                    // Set current run count to 1
+                    this.currentRunCounts[normalizedName] = 1;
+
+                    updatedCount++;
                 } else {
-                    // Model doesn't have scores - this shouldn't happen but log it
-                    console.error(`Model ${modelData.name} has no scores data - this should not happen!`);
-                    
-                    // Force create a basic evaluation so it shows up
-                    if (!existingEval) {
-                        const evaluation = {
-                            id: this.generateId(),
-                            sessionId: sessionId,
-                            modelName: modelData.name,
-                            modelUrl: modelData.url || '',
-                            scores: {},
-                            evidence: {},
-                            totalScore: 0,
-                            tier: 'Bronze',
-                            notes: 'Error: No evaluation data available',
-                            timestamp: Date.now(),
-                            modified: false,
-                            autoGenerated: true,
-                            evalCount: 1
-                        };
-                        this.evaluations.push(evaluation);
-                        addedCount++;
+                    // Add new evaluation
+                    console.log(`  → Creating new evaluation`);
+
+                    // Collect evidence from the scores structure
+                    const evidence = {};
+                    for (const [dimension, criteria] of Object.entries(modelData.scores)) {
+                        for (const [criterion, data] of Object.entries(criteria)) {
+                            if (data.evidence) {
+                                evidence[criterion] = data.evidence;
+                            }
+                        }
                     }
+
+                    // Add new evaluation
+                    const normalizedName = this.normalizeModelName(modelData.name);
+                    const evaluation = {
+                        id: this.generateId(),
+                        sessionId: sessionId,
+                        modelName: normalizedName,
+                        modelUrl: modelData.url,
+                        scores: this.extractScoresFromModelData(modelData.scores),
+                        evidence: evidence,
+                        totalScore: modelData.totalScore,
+                        tier: modelData.tier || this.getTier(modelData.totalScore).name,
+                        notes: modelData.notes || 'Auto-evaluated by TRUE Framework',
+                        timestamp: Date.now(),
+                        modified: false,
+                        autoGenerated: true,
+                        evalCount: 1
+                    };
+                    this.evaluations.push(evaluation);
+
+                    // Set current run count to 1
+                    this.currentRunCounts[normalizedName] = 1;
+
+                    addedCount++;
+                }
+            } else {
+                // Model doesn't have scores
+                console.error(`  ✗ Model has no scores data!`);
+
+                // Create basic evaluation if it doesn't exist
+                if (!existingEval) {
+                    const normalizedName = this.normalizeModelName(modelData.name);
+                    const evaluation = {
+                        id: this.generateId(),
+                        sessionId: sessionId,
+                        modelName: normalizedName,
+                        modelUrl: modelData.url || '',
+                        scores: {},
+                        evidence: {},
+                        totalScore: 0,
+                        tier: 'Bronze',
+                        notes: 'Error: No evaluation data available',
+                        timestamp: Date.now(),
+                        modified: false,
+                        autoGenerated: true,
+                        evalCount: 1
+                    };
+                    this.evaluations.push(evaluation);
+                    this.currentRunCounts[normalizedName] = 1;
+                    addedCount++;
                 }
             }
-            
-            if (addedCount > 0 || updatedCount > 0) {
-                // Save the auto-populated evaluations
-                console.log(`Saving evaluations - Added: ${addedCount}, Updated: ${updatedCount}`);
-                this.saveEvaluations();
-                
-                // Show notification about evaluations
-                const totalModels = Object.keys(dynamicModelEvaluations).length;
-                let message = `🔄 Auto-evaluated ${totalModels} popular models: `;
-                if (addedCount > 0 && updatedCount > 0) {
-                    message += `${addedCount} new, ${updatedCount} re-evaluated (counts incremented)`;
-                } else if (addedCount > 0) {
-                    message += `${addedCount} new models added`;
-                } else {
-                    message += `${updatedCount} models re-evaluated (counts incremented)`;
-                }
-                message += '. Each refresh contributes to model rankings!';
-                this.showNotification(message, 'success', 5000);
-            }
-            
-            console.log('Current evaluations count after:', this.evaluations.length);
-            console.log('Current run counts:', this.currentRunCounts);
-            console.log('Current popular models:', Array.from(this.currentPopularModels));
         }
+
+        // Step 4: Save merged evaluations (to localStorage and immediately to Firebase)
+        console.log('🔵 Step 4: Saving evaluations - Added:', addedCount, ', Updated:', updatedCount);
+        this.saveEvaluations();
+
+        // Force immediate upload to Firebase to prevent real-time sync from overwriting
+        if (window.firebaseStorage && window.firebaseStorage.initialized) {
+            console.log('🔵 Step 4a: Force uploading to Firebase immediately...');
+            try {
+                await window.firebaseStorage.saveEvaluations(this.evaluations);
+                console.log('🔵 Step 4a: Firebase upload complete');
+            } catch (error) {
+                console.error('🔵 Step 4a: Firebase upload failed:', error);
+            }
+        }
+
+        // Step 5: Show completion notification
+        let message = `✅ Auto-evaluated ${totalModels} popular models`;
+        if (addedCount > 0 && updatedCount > 0) {
+            message += ` (${addedCount} new, ${updatedCount} updated)`;
+        } else if (addedCount > 0) {
+            message += ` (${addedCount} new)`;
+        } else if (updatedCount > 0) {
+            message += ` (${updatedCount} updated)`;
+        }
+        // Popular models auto-evaluated - no notification needed
+
+        console.log('🔵 Step 5: Complete!');
+        console.log('🔵 Final state:');
+        console.log('   - Total evaluations:', this.evaluations.length);
+        console.log('   - Popular models:', this.currentPopularModels.size);
+        console.log('   - Current run counts:', Object.keys(this.currentRunCounts).length);
+
+        console.log('🔵 === COMPLETE: Auto-evaluate popular models ===');
     }
     
     getOrCreateSessionId() {
@@ -765,11 +792,83 @@ class TRUEFramework {
             this.checkFirebaseConfig();
             this.forceUpdateFirebaseUI();
         }, 2000);
-        
+
         // URL suggestions functionality
         this.setupUrlSuggestions();
+
+        // Setup column resizing
+        this.setupColumnResize();
     }
-    
+
+    setupColumnResize() {
+        // Add resize functionality to the Model column (2nd column)
+        const modelHeader = document.querySelector('#leaderboard th:nth-child(2)');
+        if (!modelHeader) return;
+
+        // Add resize handle
+        const resizeHandle = document.createElement('div');
+        resizeHandle.className = 'column-resize-handle';
+        modelHeader.style.position = 'relative';
+        modelHeader.appendChild(resizeHandle);
+
+        let isResizing = false;
+        let startX = 0;
+        let startWidth = 0;
+
+        resizeHandle.addEventListener('mousedown', (e) => {
+            isResizing = true;
+            startX = e.pageX;
+            startWidth = modelHeader.offsetWidth;
+
+            // Prevent text selection while resizing
+            e.preventDefault();
+            document.body.style.userSelect = 'none';
+            document.body.style.cursor = 'col-resize';
+        });
+
+        document.addEventListener('mousemove', (e) => {
+            if (!isResizing) return;
+
+            const diff = e.pageX - startX;
+            const newWidth = Math.max(100, startWidth + diff); // Minimum 100px
+            modelHeader.style.width = newWidth + 'px';
+
+            // Also update the corresponding body column
+            const bodyTable = document.querySelector('#leaderboard-body-table');
+            if (bodyTable) {
+                const bodyCells = bodyTable.querySelectorAll('td:nth-child(2)');
+                bodyCells.forEach(cell => {
+                    cell.style.width = newWidth + 'px';
+                });
+            }
+        });
+
+        document.addEventListener('mouseup', () => {
+            if (isResizing) {
+                isResizing = false;
+                document.body.style.userSelect = '';
+                document.body.style.cursor = '';
+
+                // Save the width to localStorage
+                const width = modelHeader.offsetWidth;
+                localStorage.setItem('true_model_column_width', width);
+            }
+        });
+
+        // Restore saved width on page load
+        const savedWidth = localStorage.getItem('true_model_column_width');
+        if (savedWidth) {
+            modelHeader.style.width = savedWidth + 'px';
+            const bodyTable = document.querySelector('#leaderboard-body-table');
+            if (bodyTable) {
+                const bodyCells = bodyTable.querySelectorAll('td:nth-child(2)');
+                bodyCells.forEach(cell => {
+                    cell.style.width = savedWidth + 'px';
+                });
+            }
+        }
+    }
+
     setupUrlSuggestions() {
         // Setup refresh button
         const refreshBtn = document.getElementById('refresh-suggestions');
@@ -787,34 +886,42 @@ class TRUEFramework {
             item.addEventListener('click', (e) => {
                 e.preventDefault();
                 e.stopPropagation();
-                
+
                 const url = e.target.dataset.url;
+                const displayName = e.target.textContent;
                 const urlInput = document.getElementById('model-url');
                 if (urlInput && url) {
                     urlInput.value = url;
-                    
+                    // Store the display name for later use
+                    urlInput.dataset.displayName = displayName;
+
                     // Mark that we just selected to prevent re-opening
                     if (urlInput.markJustSelected) {
                         urlInput.markJustSelected();
                     }
-                    
+
                     // Force hide suggestions after selection
                     const suggestionsBox = document.getElementById('url-suggestions');
                     if (suggestionsBox) {
                         suggestionsBox.classList.remove('show');
                         suggestionsBox.style.display = 'none';
-                        
+
                         // Reset display after a moment to allow CSS control again
                         setTimeout(() => {
                             suggestionsBox.style.display = '';
                         }, 100);
                     }
-                    
+
                     // Show notification
-                    this.showNotification(`Selected: ${e.target.textContent}`);
-                    
+                    // Model selection - no notification needed
+
                     // Remove focus from input to prevent re-opening
                     urlInput.blur();
+
+                    // Automatically trigger evaluation
+                    setTimeout(() => {
+                        this.autoAnalyze();
+                    }, 150);
                 }
             });
         });
@@ -978,12 +1085,9 @@ class TRUEFramework {
         
         // Save to localStorage
         this.saveEvaluations();
-        
+
         // Update leaderboard
         this.renderLeaderboard();
-        
-        // Show subtle notification
-        this.showNotification('✅ Auto-saved', 'success', 1500);
     }
     
     showNotification(message, type = 'info', duration = null) {
@@ -1023,15 +1127,26 @@ class TRUEFramework {
         }, displayTime);
     }
 
+    // Normalize model name to consistent case format
+    // This ensures "Mistral-7B", "mistral-7b", "MISTRAL-7B" are all treated as the same model
+    normalizeModelName(modelName) {
+        if (!modelName) return '';
+
+        // Trim whitespace and convert to lowercase for storage
+        // We use lowercase as the canonical format for all model names
+        return modelName.trim().toLowerCase();
+    }
+
     extractModelNameFromUrl(url) {
         // If it's not a URL, use it as the model name directly
         if (!url.includes('://') && !url.includes('/')) {
-            return url;
+            return this.normalizeModelName(url);
         }
-        
+
         // Extract model name from GitHub or HuggingFace URL
         const parts = url.split('/');
-        return parts[parts.length - 1] || 'Custom Model';
+        const name = parts[parts.length - 1] || 'Custom Model';
+        return this.normalizeModelName(name);
     }
 
     async autoAnalyze() {
@@ -1053,8 +1168,8 @@ class TRUEFramework {
             // First, start the evaluation to show the scoring section
             // Use display name if available (from dropdown selection), otherwise extract from URL
             const displayName = urlInput.dataset.displayName;
-            const modelName = displayName || this.extractModelNameFromUrl(url);
-            
+            const modelName = displayName ? this.normalizeModelName(displayName) : this.extractModelNameFromUrl(url);
+
             // Clear the display name after using it
             if (displayName) {
                 delete urlInput.dataset.displayName;
@@ -1082,7 +1197,7 @@ class TRUEFramework {
                 // Add to current popular models so it shows in current run
                 this.currentPopularModels.add(modelName);
                 
-                this.showNotification('Re-evaluating existing model - evaluation date will be updated', 'info');
+                // Re-evaluating - no notification needed
             } else {
                 // New model evaluation
                 this.currentEvaluation = {
@@ -1114,10 +1229,12 @@ class TRUEFramework {
                 console.log('Scoring fields enabled after auto-analyze');
             }, 100);
             
-            // After manual evaluation starts, switch to date sorting
+            // After manual evaluation starts, switch to date sorting to show latest first
             this.justManuallyEvaluated = true;
             this.sortConfig = { column: 'date', direction: 'desc' };
-            
+            this.renderLeaderboard(); // Immediately update leaderboard with new sort
+            this.updateSortIndicators(); // Update column headers to show date sort
+
             // Trigger first auto-save to show in leaderboard
             this.autoSaveEvaluation(false);
             
@@ -1134,7 +1251,7 @@ class TRUEFramework {
             
         } catch (error) {
             console.error('Analysis failed:', error);
-            this.showNotification('Analysis completed. Please review and complete the evaluation', 'info');
+            // Analysis completed - no notification needed
         } finally {
             button.textContent = originalText;
             button.disabled = false;
@@ -1172,10 +1289,10 @@ class TRUEFramework {
             // Check model name for additional hints
             if (urlLower.includes('gemma')) {
                 analysis.understandable.architecture = { checked: true, evidence: 'https://ai.google.dev/gemma/docs' };
-                this.showNotification('Detected Google Gemma model - applied HuggingFace patterns');
+                // Detected Gemma model
             } else if (urlLower.includes('qwen')) {
                 analysis.transparent.training = { checked: true, evidence: 'https://github.com/QwenLM/Qwen' };
-                this.showNotification('Detected Qwen model - checking for training code');
+                // Detected Qwen model
             }
         } else if (urlLower.includes('github.com')) {
             // GitHub repositories
@@ -1186,13 +1303,13 @@ class TRUEFramework {
             // Check for specific organizations
             if (urlLower.includes('/google-deepmind/')) {
                 analysis.transparent.weights = { checked: true, evidence: 'Check HuggingFace for weights' };
-                this.showNotification('Detected Google DeepMind repository');
+                // Detected DeepMind repository
             } else if (urlLower.includes('/microsoft/')) {
                 analysis.executable.runnable = { checked: true, evidence: url + '#getting-started' };
-                this.showNotification('Detected Microsoft repository');
+                // Detected Microsoft repository
             } else if (urlLower.includes('/meta') || urlLower.includes('/facebook')) {
                 analysis.transparent.weights = { checked: true, evidence: 'Check HuggingFace for weights' };
-                this.showNotification('Detected Meta/Facebook repository');
+                // Detected Meta/Facebook repository
             }
         }
         
@@ -1235,7 +1352,7 @@ class TRUEFramework {
         
         // Show analysis complete message
         const checkedCount = document.querySelectorAll('.criterion input[type="checkbox"]:checked').length;
-        this.showNotification(`Auto-analysis complete: ${checkedCount} criteria detected. Please review and complete manually.`);
+        // Auto-analysis complete - no notification needed
         
         return analysis;
     }
@@ -1338,7 +1455,7 @@ class TRUEFramework {
                 evaluation.modified = true;
                 evaluation.modifiedDate = new Date().toISOString();
                 this.evaluations[duplicateIndex] = evaluation;
-                this.showNotification('⚠️ Updated existing evaluation for ' + evaluation.modelName, 'info');
+                // Updated existing evaluation - no notification needed
             } else {
                 // Completely new evaluation with initial count
                 if (!evaluation.evalCount) {
@@ -1359,8 +1476,7 @@ class TRUEFramework {
         this.justManuallyEvaluated = true;
         this.sortConfig = { column: 'date', direction: 'desc' };
         
-        // Show success notification instead of alert
-        this.showNotification('✅ Evaluation saved! Showing latest evaluations first.', 'success');
+        // Evaluation saved - no notification needed
         this.renderLeaderboard();
         this.resetEvaluation();
         
@@ -1427,7 +1543,7 @@ class TRUEFramework {
         link.download = `true-evaluation-${evaluation.modelName}-${Date.now()}.json`;
         link.click();
         
-        this.showNotification('📥 Evaluation exported successfully', 'success');
+        // Evaluation exported - no notification needed
     }
 
     captureOriginalState() {
@@ -1623,7 +1739,7 @@ class TRUEFramework {
         // Hide the save/cancel buttons
         this.hideModifiedButtons();
         
-        this.showNotification('✅ Changes saved successfully', 'success');
+        // Changes saved - no notification needed
     }
     
     cancelScoringChanges() {
@@ -1664,7 +1780,7 @@ class TRUEFramework {
         // Hide the save/cancel buttons
         this.hideModifiedButtons();
         
-        this.showNotification('Changes canceled', 'info');
+        // Changes canceled - no notification needed
     }
     
     exitScoringEditMode() {
@@ -1691,16 +1807,10 @@ class TRUEFramework {
         if (normalButtons) normalButtons.style.display = 'flex';
         if (editButtons) editButtons.style.display = 'none';
         
-        // Restore original tip
+        // Hide tip message
         const tipDiv = document.getElementById('scoring-tip');
         if (tipDiv) {
-            tipDiv.style.background = '#f0f9ff';
-            tipDiv.style.borderLeftColor = '#0284c7';
-            tipDiv.innerHTML = `
-                <p style="margin: 0; color: #0c4a6e;">
-                    <strong>💡 Auto-Save Enabled:</strong> Review the auto-analyzed results and make any necessary adjustments. Your changes are saved automatically. To edit later, click on the model in the leaderboard.
-                </p>
-            `;
+            tipDiv.style.display = 'none';
         }
     }
     
@@ -1738,12 +1848,24 @@ class TRUEFramework {
         const tbody = document.getElementById('leaderboard-body');
         const tierFilter = document.getElementById('tier-filter').value;
         const searchFilter = document.getElementById('search-filter').value.toLowerCase();
-        
-        console.log('renderLeaderboard called');
-        console.log('View mode:', this.evalViewMode);
-        console.log('Total evaluations:', this.evaluations.length);
-        console.log('Popular models set size:', this.currentPopularModels.size);
-        
+
+        console.log('🟠 renderLeaderboard called');
+        console.log('🟠 View mode:', this.evalViewMode);
+        console.log('🟠 Total evaluations:', this.evaluations.length);
+        console.log('🟠 Sort config:', this.sortConfig);
+        console.log('🟠 Popular models set size:', this.currentPopularModels.size);
+        console.log('🟠 Popular models:', Array.from(this.currentPopularModels).slice(0, 5));
+
+        // Safety check: Deduplicate before rendering to prevent display issues
+        const beforeDedup = this.evaluations.length;
+        this.evaluations = this.removeDuplicates(this.evaluations);
+        const afterDedup = this.evaluations.length;
+
+        if (beforeDedup > afterDedup) {
+            console.log(`⚠️ Removed ${beforeDedup - afterDedup} duplicates during render - saving cleaned data`);
+            this.saveEvaluations();
+        }
+
         // Calculate evaluation counts for each model
         const evalCounts = this.getEvaluationCounts();
         
@@ -1754,17 +1876,21 @@ class TRUEFramework {
                 // Check if this model is in the current popular models set
                 const isInPopular = this.currentPopularModels.has(e.modelName);
                 if (!isInPopular) {
-                    console.log(`Filtering out ${e.modelName} - not in popular list`);
                     return false;
                 }
             }
-            
+
             if (tierFilter !== 'all' && e.tier.toLowerCase() !== tierFilter) return false;
             if (searchFilter && !e.modelName.toLowerCase().includes(searchFilter)) return false;
             return true;
         });
         
-        console.log('Filtered evaluations count:', filtered.length);
+        console.log('🟠 Filtered evaluations count:', filtered.length);
+        if (filtered.length > 0) {
+            console.log('🟠 Sample filtered models:', filtered.slice(0, 3).map(e => e.modelName));
+        } else {
+            console.warn('🔴 NO models passed the filter!');
+        }
         
         // Calculate score-based ranks (rank always reflects score position)
         // Handle ties: models with same score get the same rank
@@ -2243,7 +2369,7 @@ class TRUEFramework {
         window.scrollTo({ top: 0, behavior: 'smooth' });
         
         // Show notification
-        this.showNotification('📝 Now editing evaluation. Changes are auto-saved.', 'info', 5000);
+        // Now editing evaluation - no notification needed
     }
 
     // Persistence methods
@@ -2283,10 +2409,12 @@ class TRUEFramework {
         
         // Convert back to array and preserve evaluation counts
         const cleanedEvaluations = Array.from(uniqueEvaluations.values()).map(evaluation => {
-            const modelKey = evaluation.modelName.toLowerCase();
+            const modelKey = evaluation.modelName.toLowerCase().trim();
             const count = evalCounts.get(modelKey) || 1;
             // Always set evalCount, preserving the maximum of counted duplicates or existing count
             evaluation.evalCount = Math.max(count, evaluation.evalCount || 1);
+            // Ensure modelName is normalized
+            evaluation.modelName = modelKey;
             return evaluation;
         });
         
@@ -2326,7 +2454,7 @@ class TRUEFramework {
         const url = formUrl || 'https://docs.google.com/forms/d/e/YOUR_FORM_ID/formResponse';
         
         localStorage.setItem('true_gforms_config', JSON.stringify({ url }));
-        this.showNotification('✅ Google Forms integration configured!', 'success');
+        // Google Forms configured - no notification needed
         this.checkPersistenceStatus();
     }
 
@@ -2369,7 +2497,7 @@ class TRUEFramework {
         link.download = `true-all-evaluations-${Date.now()}.json`;
         link.click();
         
-        this.showNotification(`📥 Exported ${this.evaluations.length} evaluations`, 'success');
+        // Exported evaluations - no notification needed
     }
 
     importData() {
@@ -2388,7 +2516,7 @@ class TRUEFramework {
                     this.evaluations = [...this.evaluations, ...data];
                     this.saveEvaluations();
                     this.renderLeaderboard();
-                    this.showNotification(`📤 ${data.length} evaluations imported successfully!`, 'success');
+                    // Evaluations imported successfully - no notification needed
                 } else {
                     this.showNotification('Invalid data format', 'error');
                 }
@@ -2497,7 +2625,7 @@ class TRUEFramework {
         // Re-render the modal in read-only mode
         this.viewEvaluation(this.currentModalId, false);
         
-        this.showNotification('✅ Changes saved successfully', 'success', 3000);
+        // Changes saved successfully - no notification needed
     }
     
     enableModalEdit(id) {
@@ -2518,7 +2646,7 @@ class TRUEFramework {
         // Re-render the modal in read-only mode
         this.viewEvaluation(this.currentModalId, false);
         
-        this.showNotification('❌ Changes cancelled', 'info', 2000);
+        // Changes cancelled - no notification needed
     }
     
     exportSingleEvaluation(id) {
@@ -2536,7 +2664,7 @@ class TRUEFramework {
         link.download = `true-evaluation-${evaluation.modelName.replace(/\s+/g, '-')}-${Date.now()}.json`;
         link.click();
         
-        this.showNotification(`📥 Exported evaluation for ${evaluation.modelName}`, 'success');
+        // Exported evaluation - no notification needed
     }
     
     checkCachedSuggestions() {
@@ -2593,7 +2721,7 @@ class TRUEFramework {
             this.renderLeaderboard();
             
             // Show success
-            this.showNotification('✅ Updated with latest trending models and re-evaluated!', 'success');
+            // Updated with latest models - no notification needed
             if (statusEl) statusEl.textContent = 'Just updated';
             
         } catch (error) {
@@ -2824,7 +2952,7 @@ class TRUEFramework {
             item.addEventListener('click', (e) => {
                 e.preventDefault();
                 e.stopPropagation();
-                
+
                 const url = e.target.dataset.url;
                 const displayName = e.target.textContent;
                 const urlInput = document.getElementById('model-url');
@@ -2832,19 +2960,19 @@ class TRUEFramework {
                     urlInput.value = url;
                     // Store the display name for later use
                     urlInput.dataset.displayName = displayName;
-                    
+
                     // Set flag to ignore next focus event
                     if (urlInput.ignoreNextFocus) {
                         urlInput.ignoreNextFocus();
                     }
-                    
+
                     // Force close the suggestions box immediately
                     const suggestionsBox = document.getElementById('url-suggestions');
                     if (suggestionsBox) {
                         suggestionsBox.classList.remove('show');
                         // Force style override to ensure it closes
                         suggestionsBox.style.setProperty('display', 'none', 'important');
-                        
+
                         // Clear the style override after a moment
                         setTimeout(() => {
                             if (suggestionsBox) {
@@ -2852,19 +2980,18 @@ class TRUEFramework {
                             }
                         }, 100);
                     }
-                    
-                    this.showNotification(`Selected: ${displayName}`);
-                    
+
+                    // Model selection - no notification needed
+
                     // Delay blur to ensure flag is set first
                     setTimeout(() => {
                         urlInput.blur();
                     }, 10);
-                    
-                    // Focus the Auto-Analyze button instead
-                    const analyzeBtn = document.getElementById('auto-analyze');
-                    if (analyzeBtn) {
-                        analyzeBtn.focus();
-                    }
+
+                    // Automatically trigger evaluation instead of just focusing the button
+                    setTimeout(() => {
+                        this.autoAnalyze();
+                    }, 150);
                 }
             });
         });
@@ -2872,8 +2999,9 @@ class TRUEFramework {
     
     applySorting(data) {
         const { column, direction } = this.sortConfig;
-        
-        return [...data].sort((a, b) => {
+        console.log('🔵 applySorting - column:', column, 'direction:', direction, 'data length:', data.length);
+
+        const sorted = [...data].sort((a, b) => {
             let aVal, bVal;
             
             switch (column) {
@@ -2941,6 +3069,12 @@ class TRUEFramework {
                 return bVal - aVal;
             }
         });
+
+        if (sorted.length > 0) {
+            console.log('🔵 First model after sort:', sorted[0].modelName, 'timestamp:', sorted[0].timestamp);
+        }
+
+        return sorted;
     }
     
     handleSort(column) {
@@ -3250,33 +3384,43 @@ class TRUEFramework {
                 // Merge historic data with local data
                 const localEvaluations = this.evaluations || [];
                 const mergedEvaluations = this.mergeHistoricAndLocalData(historicEvaluations, localEvaluations);
-                
+
                 // Update the app's evaluations
                 this.evaluations = mergedEvaluations;
-                
+
                 // Save merged data to localStorage for offline access
-                this.saveEvaluations();
-                
+                localStorage.setItem('true_evaluations', JSON.stringify(this.evaluations));
+
+                // Save merged data back to Firebase to ensure global consistency
+                // This ensures that if local had newer data, it's now in Firebase for other browsers
+                console.log('🔄 Saving merged data back to Firebase to ensure global consistency...');
+                try {
+                    await window.firebaseStorage.saveEvaluations(this.evaluations);
+                    console.log('✅ Merged data saved to Firebase');
+                } catch (error) {
+                    console.error('❌ Error saving merged data to Firebase:', error);
+                }
+
                 // Show notification about historic data
                 const newCount = historicEvaluations.length - localEvaluations.length;
                 if (newCount > 0) {
-                    this.showNotification(`📥 Loaded ${newCount} historic evaluations from Firebase`, 'info', 4000);
+                    // Loaded evaluations from Firebase - no notification needed
                 } else {
-                    this.showNotification(`📥 Synced ${historicEvaluations.length} evaluations from Firebase`, 'info', 3000);
+                    // Synced evaluations from Firebase - no notification needed
                 }
-                
+
                 // Get storage statistics
                 const stats = await window.firebaseStorage.getStorageStats();
                 if (stats) {
                     console.log('📊 Firebase Storage Stats:', stats);
                 }
-                
+
                 // Automatically enable Firebase sync on first load if not already enabled
                 const syncEnabled = localStorage.getItem('firebase_sync_enabled') === 'true';
                 if (!syncEnabled) {
                     console.log('🔥 Auto-enabling Firebase sync on first load...');
                     await this.enableFirebaseSync();
-                    this.showNotification('🔥 Firebase Cloud Sync automatically enabled', 'success', 3000);
+                    // Firebase Cloud Sync enabled - no notification needed
                 } else {
                     console.log('🔥 Firebase sync already enabled');
                 }
@@ -3293,7 +3437,7 @@ class TRUEFramework {
                     this.evaluations = [];
                     this.saveEvaluations();
                     console.log('🗑️ Cleared localStorage to match empty Firebase');
-                    this.showNotification('🗑️ Firebase cleared - localStorage reset to match', 'info', 3000);
+                    // Firebase cleared - no notification needed
                 }
             }
             
@@ -3388,7 +3532,7 @@ class TRUEFramework {
             statusEl.style.color = '#3b82f6';
         }
         
-        this.showNotification('🔄 Retrying Firebase connection...', 'info', 2000);
+        // Retrying Firebase connection - no notification needed
         
         // Remove retry button temporarily
         const firebaseOption = document.getElementById('firebase-option');
@@ -3410,12 +3554,23 @@ class TRUEFramework {
                         const localEvaluations = this.evaluations || [];
                         const mergedEvaluations = this.mergeHistoricAndLocalData(historicEvaluations, localEvaluations);
                         this.evaluations = mergedEvaluations;
-                        this.saveEvaluations();
+
+                        // Save merged data to localStorage
+                        localStorage.setItem('true_evaluations', JSON.stringify(this.evaluations));
+
+                        // Save merged data back to Firebase to ensure global consistency
+                        try {
+                            await window.firebaseStorage.saveEvaluations(this.evaluations);
+                            console.log('✅ Merged data saved to Firebase after reconnection');
+                        } catch (error) {
+                            console.error('❌ Error saving merged data to Firebase:', error);
+                        }
+
                         this.renderLeaderboard();
-                        
-                        this.showNotification(`✅ Firebase reconnected! Loaded ${historicEvaluations.length} evaluations`, 'success', 4000);
+
+                        // Firebase reconnected - no notification needed
                     } else {
-                        this.showNotification('✅ Firebase reconnected!', 'success', 3000);
+                        // Firebase reconnected - no notification needed
                     }
                     
                     // Update UI to show connected state
@@ -3448,43 +3603,95 @@ class TRUEFramework {
     }
     
     // Merge historic Firebase data with local localStorage data
+    // This implements bidirectional sync - comparing timestamps and internal data
     mergeHistoricAndLocalData(historicData, localData) {
         console.log(`🔄 Merging ${historicData.length} historic + ${localData.length} local evaluations`);
-        
+
         if (!Array.isArray(historicData) || !Array.isArray(localData)) {
             console.error('❌ Invalid data for merge:', { historicData, localData });
             return Array.isArray(localData) ? localData : [];
         }
-        
-        const merged = [];
-        const seenIds = new Set();
-        
-        // Add historic data first (it's likely more comprehensive)
+
+        const merged = new Map();
+        let updatedFromLocal = 0;
+        let updatedFromHistoric = 0;
+        let newFromLocal = 0;
+        let newFromHistoric = 0;
+
+        // Step 1: Add all historic data to the map
         historicData.forEach(evaluation => {
             if (evaluation && evaluation.id) {
-                merged.push(evaluation);
-                seenIds.add(evaluation.id);
+                merged.set(evaluation.id, evaluation);
+                newFromHistoric++;
             }
         });
-        
-        // Add local data that doesn't exist in historic data
-        let newLocalCount = 0;
-        localData.forEach(evaluation => {
-            if (evaluation && evaluation.id && !seenIds.has(evaluation.id)) {
-                merged.push(evaluation);
-                seenIds.add(evaluation.id);
-                newLocalCount++;
+
+        // Step 2: Merge local data - compare timestamps and internal data
+        localData.forEach(localEval => {
+            if (!localEval || !localEval.id) return;
+
+            const historicEval = merged.get(localEval.id);
+
+            if (!historicEval) {
+                // New entry only in local - add it
+                merged.set(localEval.id, localEval);
+                newFromLocal++;
+                console.log(`📝 New local entry: ${localEval.modelName}`);
+            } else {
+                // Entry exists in both - compare and merge
+                const historicTime = historicEval.lastModified || historicEval.timestamp || 0;
+                const localTime = localEval.lastModified || localEval.timestamp || 0;
+
+                // Compare evalCount to detect changes
+                const historicEvalCount = historicEval.evalCount || 1;
+                const localEvalCount = localEval.evalCount || 1;
+
+                // Check if internal data has changed (scores, evidence, notes, etc.)
+                const scoresChanged = JSON.stringify(historicEval.scores) !== JSON.stringify(localEval.scores);
+                const notesChanged = historicEval.notes !== localEval.notes;
+                const evidenceChanged = JSON.stringify(historicEval.evidence) !== JSON.stringify(localEval.evidence);
+
+                if (localTime > historicTime || localEvalCount > historicEvalCount || scoresChanged || notesChanged || evidenceChanged) {
+                    // Local is newer or has more evaluations or has changed data - use local
+                    merged.set(localEval.id, localEval);
+                    updatedFromLocal++;
+                    console.log(`🔄 Updated from local: ${localEval.modelName} (local time: ${new Date(localTime).toLocaleString()}, historic time: ${new Date(historicTime).toLocaleString()}, evalCount: ${localEvalCount} vs ${historicEvalCount})`);
+                } else if (historicTime > localTime || historicEvalCount > localEvalCount) {
+                    // Historic is newer or has more evaluations - keep historic (already in map)
+                    updatedFromHistoric++;
+                    console.log(`🔄 Kept historic: ${historicEval.modelName} (historic time: ${new Date(historicTime).toLocaleString()}, evalCount: ${historicEvalCount})`);
+                }
+                // If times and counts are equal, keep historic (already in map)
             }
         });
-        
-        console.log(`📊 Merge result: ${historicData.length} historic + ${localData.length} local → ${merged.length} total (${newLocalCount} new local)`);
-        
-        // Sort by timestamp (newest first) for consistent ordering
-        return merged.sort((a, b) => {
+
+        console.log(`📊 Merge result: ${historicData.length} historic + ${localData.length} local → ${merged.size} total`);
+        console.log(`   - New from historic: ${newFromHistoric - updatedFromLocal}`);
+        console.log(`   - New from local: ${newFromLocal}`);
+        console.log(`   - Updated from local: ${updatedFromLocal}`);
+        console.log(`   - Updated from historic: ${updatedFromHistoric}`);
+
+        // Convert map to array
+        let result = Array.from(merged.values());
+
+        // Step 3: Deduplicate by model name (case-insensitive)
+        // This handles cases where same model has different IDs with different cases
+        const beforeDedup = result.length;
+        result = this.removeDuplicates(result);
+        const afterDedup = result.length;
+
+        if (beforeDedup > afterDedup) {
+            console.log(`🔄 Removed ${beforeDedup - afterDedup} duplicate model names after merge`);
+        }
+
+        // Sort by timestamp (newest first)
+        result.sort((a, b) => {
             const timeA = a.timestamp || 0;
             const timeB = b.timestamp || 0;
             return timeB - timeA;
         });
+
+        return result;
     }
     
     // Firebase Integration Methods
@@ -3651,7 +3858,7 @@ class TRUEFramework {
             // Remove modal
             modal.remove();
             
-            this.showNotification('Firebase configured successfully!', 'success');
+            // Firebase configured - no notification needed
         });
     }
     
@@ -3702,19 +3909,20 @@ class TRUEFramework {
         
         try {
             // Enable sync
-            window.firebaseStorage.enableSync((evaluations) => {
-                // Handle incoming changes from Firebase
-                this.evaluations = evaluations;
+            window.firebaseStorage.enableSync((firebaseEvaluations) => {
+                // Handle incoming changes from Firebase - merge intelligently
+                // Don't blindly replace local data; keep newer timestamps
+                const merged = window.firebaseStorage.mergeEvaluations(this.evaluations, firebaseEvaluations);
+                this.evaluations = merged;
                 this.renderLeaderboard();
-                console.log('Evaluations synced from Firebase');
+                console.log('Evaluations synced from Firebase (merged intelligently)');
             });
             
             console.log('🔥 Sync enabled, uploading current data...');
-            
+
             // Initial sync - merge and upload local data to Firebase
-            // Filter out auto-generated demo evaluations to avoid polluting Firebase
-            const realEvaluations = this.evaluations.filter(e => !e.autoGenerated);
-            const saveResult = await window.firebaseStorage.saveEvaluations(realEvaluations);
+            // Include all evaluations (both manual and auto-generated) to ensure complete history
+            const saveResult = await window.firebaseStorage.saveEvaluations(this.evaluations);
             console.log('🔥 Save result:', saveResult);
             
             localStorage.setItem('firebase_sync_enabled', 'true');
@@ -3723,7 +3931,7 @@ class TRUEFramework {
             // Update UI to reflect sync is now active
             this.forceUpdateFirebaseUI();
             
-            this.showNotification('Firebase sync enabled - data will sync across devices', 'success');
+            // Firebase sync enabled - no notification needed
             console.log('✅ Firebase sync enabled successfully');
             
             // Show storage statistics
@@ -3731,7 +3939,7 @@ class TRUEFramework {
                 const stats = await window.firebaseStorage.getStorageStats();
                 if (stats) {
                     console.log('📊 Firebase Storage Stats:', stats);
-                    this.showNotification(`📊 Syncing ${stats.totalEvaluations} evaluations (500 max)`, 'info', 5000);
+                    // Syncing evaluations - no notification needed
                 }
             }, 2000);
             
@@ -3794,7 +4002,7 @@ class TRUEFramework {
         // Update UI to reflect sync is now disabled
         this.forceUpdateFirebaseUI();
         
-        this.showNotification('Firebase sync disabled', 'info');
+        // Firebase sync disabled - no notification needed
     }
     
     toggleFirebaseSync() {
@@ -3955,11 +4163,11 @@ class TRUEFramework {
     // Override saveEvaluations to also save to Firebase if enabled
     saveEvaluations() {
         localStorage.setItem('true_evaluations', JSON.stringify(this.evaluations));
-        
-        // Also save to Firebase if sync is enabled, but filter out auto-generated demo evaluations
+
+        // Also save to Firebase if sync is enabled
+        // Include all evaluations (both manual and auto-generated) to ensure complete sync
         if (window.firebaseStorage && window.firebaseStorage.syncEnabled) {
-            const realEvaluations = this.evaluations.filter(e => !e.autoGenerated);
-            window.firebaseStorage.saveEvaluations(realEvaluations).catch(error => {
+            window.firebaseStorage.saveEvaluations(this.evaluations).catch(error => {
                 console.error('Firebase sync error:', error);
             });
         }
