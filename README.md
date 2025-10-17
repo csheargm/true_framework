@@ -163,6 +163,4 @@ Based on the TRUE Framework specification for evaluating open LLM reproducibilit
 
 ## Support
 
-For issues or questions:
-- Open an issue on GitHub
-- Contact: your.email@example.com
+For issues or questions, please open an issue on GitHub.
