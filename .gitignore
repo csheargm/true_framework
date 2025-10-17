@@ -28,3 +28,6 @@ yarn-error.log*
 
 # Firebase config (if it contains secrets - uncomment if needed)
 # firebase-config.js
+
+# Admin/utility tools (should not be in production)
+reset-firebase.html
