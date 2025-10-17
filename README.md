@@ -4,7 +4,7 @@ A web-based tool for evaluating the openness and reproducibility of open Large L
 
 ## Live Demo
 
-Visit: [https://yourusername.github.io/TRUE_Framework/](https://yourusername.github.io/TRUE_Framework/)
+Visit: [https://csheargm.github.io/true_framework/](https://csheargm.github.io/true_framework/)
 
 ## Overview
 
@@ -83,7 +83,7 @@ For custom URLs, click "Auto-Analyze Repository" to attempt automatic detection 
 1. Fork this repository
 2. Go to Settings → Pages
 3. Set source to main branch, root folder
-4. Your site will be available at: `https://[username].github.io/TRUE_Framework/`
+4. Your site will be available at: `https://[username].github.io/true_framework/`
 
 ### Local Development
 
